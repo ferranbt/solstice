@@ -22,4 +22,6 @@ jobs:
       - name: Install Solidity compiler
         run: sudo ./scripts/ci/install-solc.sh
       - name: Run tests
-        run: cargo test
+        run: |
+          export NUM_TESTS=100
+          cargo test
