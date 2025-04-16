@@ -1036,12 +1036,7 @@ impl StateReference {
                     data.to_vec()
                 };
 
-                println!("Data: {:?}", data);
-
-                let res = ty.decode_bytes(&data).unwrap();
-                println!("Decoded: {:?}", res);
-
-                res
+                ty.decode_bytes(&data).unwrap()
             }
             Type::Array(TypeArray { ty, size }) => {
                 let mut values = Vec::new();
