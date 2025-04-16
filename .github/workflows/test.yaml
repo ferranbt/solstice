@@ -19,5 +19,7 @@ jobs:
           toolchain: stable
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Solidity compiler
+        run: sudo ./scripts/ci/install-solc.sh
       - name: Run tests
         run: cargo test
