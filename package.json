@@ -198,7 +198,6 @@
     ]
   },
   "scripts": {
-    "postinstall": "cd client && pnpm i",
     "vscode:prepublish": "npm run esbuild-base -- --minify",
     "test-compile": "tsc -p ./",
     "compile": "cross-env NODE_ENV=production tsc -b",
@@ -228,6 +227,9 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
+    "semver": "^7.7.1",
+    "tar": "^7.4.3",
+    "axios": "^1.6.7",
     "vscode-debugadapter": "1.45.0",
     "vscode-debugprotocol": "1.45.0",
     "vscode-languageclient": "9.0.1"
