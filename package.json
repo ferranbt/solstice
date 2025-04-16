@@ -1,7 +1,7 @@
 {
   "name": "solstice-language-server",
   "displayName": "Solstice",
-  "description": "Ambitious language server for Solidity",
+  "description": "Solc Language Server and Debugger",
   "license": "MIT",
   "version": "0.1.0",
   "categories": [],
