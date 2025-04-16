@@ -21,6 +21,10 @@ jobs:
         uses: foundry-rs/foundry-toolchain@v1
       - name: Install Solidity compiler
         run: sudo ./scripts/ci/install-solc.sh
+      - name: Download forge-std in testcases
+        run: |
+          cd src/testcases
+          forge install
       - name: Run tests
         run: |
           export NUM_TESTS=100
