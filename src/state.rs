@@ -982,7 +982,12 @@ impl StateReference {
                 let slot_bytes = if let Some(slot_bytes) = self.storage.get(&offset.slot) {
                     slot_bytes
                 } else {
-                    return JsonValue::String("".to_string());
+                    // if the type is bytes, return empty as 0x, if it is string, return empty as ""
+                    if ty == Type::Bytes {
+                        return JsonValue::String("0x".to_string());
+                    } else {
+                        return JsonValue::String("".to_string());
+                    }
                 };
 
                 // Convert the full slot to a number to check if it's odd (separate storage)
@@ -1031,7 +1036,12 @@ impl StateReference {
                     data.to_vec()
                 };
 
-                ty.decode_bytes(&data).unwrap()
+                println!("Data: {:?}", data);
+
+                let res = ty.decode_bytes(&data).unwrap();
+                println!("Decoded: {:?}", res);
+
+                res
             }
             Type::Array(TypeArray { ty, size }) => {
                 let mut values = Vec::new();
@@ -2042,7 +2052,13 @@ mod tests {
             let typ = TypeTuple::arbitrary(&mut u).unwrap();
 
             let artifact = ContractGenerator::build_storage(Type::Tuple(typ), &mut u);
-            let result = harness.deploy(&artifact.source).await.unwrap();
+            let result = match harness.deploy(&artifact.source).await {
+                Ok(result) => result,
+                Err(DeployError::RecoverableError(_)) => continue,
+                Err(DeployError::FatalError(err)) => {
+                    std::panic!("bad {:?}", err);
+                }
+            };
 
             let result = result.retrieve_storage();
             assert_eq!(result, artifact.values);
@@ -2205,10 +2221,7 @@ mod tests {
 
             let result = match harness.deploy(&artifact.source).await {
                 Ok(result) => result,
-                Err(DeployError::RecoverableError(_)) => {
-                    println!("Recoverable error");
-                    continue;
-                }
+                Err(DeployError::RecoverableError(_)) => continue,
                 Err(DeployError::FatalError(err)) => {
                     std::panic!("Fatal error: {:?}", err);
                 }
