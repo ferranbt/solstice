@@ -1,4 +1,5 @@
 use builder::DefinitionIndex;
+use built_info::PKG_VERSION;
 use clap::Parser;
 use debugger::Debugger;
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,11 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 use crate::dap::Server as DapServer;
+
+// Include the generated-file as a separate module
+pub mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
 
 // mod dap;
 mod builder;
@@ -657,7 +663,7 @@ fn get_range_exclusive(start: usize, end: usize, file: &ast::File) -> Range {
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version(PKG_VERSION), about, long_about = None)]
 struct Args {
     /// Name of the person to greet
     #[arg(short, long)]

@@ -1,0 +1,149 @@
+name: release
+
+on:
+  push:
+    tags:
+      - v*
+
+env:
+  REPO_NAME: ${{ github.repository_owner }}/solstice
+  CARGO_TERM_COLOR: always
+
+jobs:
+  extract-version:
+    name: extract version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract version
+        run: echo "VERSION=$(echo ${GITHUB_REF#refs/tags/})" >> $GITHUB_OUTPUT
+        id: extract_version
+      - name: Validate version matches Cargo.toml
+        run: |
+          TAG_VERSION=${{ steps.extract_version.outputs.VERSION }}
+          if [[ ! "$TAG_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag version must start with 'v' and follow semantic versioning (e.g. v1.2.3)"
+            exit 1
+          fi
+          CARGO_VERSION=$(grep -m 1 '^version = ' Cargo.toml | cut -d '"' -f 2)
+          TAG_VERSION_WITHOUT_V=${TAG_VERSION#v}
+          if [ "$CARGO_VERSION" != "$TAG_VERSION_WITHOUT_V" ]; then
+            echo "Version mismatch: Cargo.toml has $CARGO_VERSION but tag is $TAG_VERSION_WITHOUT_V"
+            exit 1
+          fi
+    outputs:
+      VERSION: ${{ steps.extract_version.outputs.VERSION }}
+
+  build:
+    name: build release
+    runs-on: ${{ matrix.configs.os }}
+    needs: extract-version
+    strategy:
+      matrix:
+        configs:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            profile: release
+          - target: aarch64-apple-darwin
+            os: macos-14
+            profile: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.configs.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Apple M1 setup
+        if: matrix.configs.target == 'aarch64-apple-darwin'
+        run: |
+          echo "SDKROOT=$(xcrun -sdk macosx --show-sdk-path)" >> $GITHUB_ENV
+          echo "MACOSX_DEPLOYMENT_TARGET=$(xcrun -sdk macosx --show-sdk-platform-version)" >> $GITHUB_ENV
+
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.configs.target }}
+
+      - name: Move binary
+        run: |
+          mkdir artifacts
+          mv "target/${{ matrix.configs.target }}/release/solstice" ./artifacts
+
+      - name: Configure GPG and create artifacts
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          export GPG_TTY=$(tty)
+          echo -n "$GPG_SIGNING_KEY" | base64 --decode | gpg --batch --import
+          cd artifacts
+          tar -czf solstice-${{ needs.extract-version.outputs.VERSION }}-${{ matrix.configs.target }}.tar.gz solstice
+          echo "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab solstice-${{ needs.extract-version.outputs.VERSION }}-${{ matrix.configs.target }}.tar.gz
+          mv *tar.gz* ..
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: solstice-${{ needs.extract-version.outputs.VERSION }}-${{ matrix.configs.target }}.tar.gz
+          path: solstice-${{ needs.extract-version.outputs.VERSION }}-${{ matrix.configs.target }}.tar.gz
+
+      - name: Upload signature
+        uses: actions/upload-artifact@v4
+        with:
+          name: solstice-${{ needs.extract-version.outputs.VERSION }}-${{ matrix.configs.target }}.tar.gz.asc
+          path: solstice-${{ needs.extract-version.outputs.VERSION }}-${{ matrix.configs.target }}.tar.gz.asc
+
+  draft-release:
+    name: draft release
+    needs: [build, extract-version]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.extract-version.outputs.VERSION }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+      - name: Generate full changelog
+        id: changelog
+        run: |
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$(git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 ${{ env.VERSION }}^)..${{ env.VERSION }})" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Create release draft
+        env:
+          GITHUB_USER: ${{ github.repository_owner }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          body=$(cat <<- "ENDBODY"
+          # Solstice ${{ env.VERSION }}
+
+          ## Summary
+
+          Add a summary of changes in this release.
+
+          ## All Changes
+
+          ${{ steps.changelog.outputs.CHANGELOG }}
+
+          ## Binaries
+
+          The binaries are signed with the PGP key: `YOUR_PGP_KEY_HERE`
+
+          | System | Architecture | Binary | PGP Signature |
+          |:---:|:---:|:---:|:---|
+          | <img src="https://simpleicons.org/icons/linux.svg" style="width: 32px;"/> | x86_64 | [solstice-${{ env.VERSION }}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ env.REPO_NAME }}/releases/download/${{ env.VERSION }}/solstice-${{ env.VERSION }}-x86_64-unknown-linux-gnu.tar.gz) | [PGP Signature](https://github.com/${{ env.REPO_NAME }}/releases/download/${{ env.VERSION }}/solstice-${{ env.VERSION }}-x86_64-unknown-linux-gnu.tar.gz.asc) |
+          | <img src="https://simpleicons.org/icons/apple.svg" style="width: 32px;"/> | aarch64 | [solstice-${{ env.VERSION }}-aarch64-apple-darwin.tar.gz](https://github.com/${{ env.REPO_NAME }}/releases/download/${{ env.VERSION }}/solstice-${{ env.VERSION }}-aarch64-apple-darwin.tar.gz) | [PGP Signature](https://github.com/${{ env.REPO_NAME }}/releases/download/${{ env.VERSION }}/solstice-${{ env.VERSION }}-aarch64-apple-darwin.tar.gz.asc) |
+          ENDBODY
+          )
+          assets=()
+          for asset in ./*solstice-*.tar.gz*; do
+              assets+=("$asset/$asset")
+          done
+          tag_name="${{ env.VERSION }}"
+          echo "$body" | gh release create --draft -t "Solstice $tag_name" -F "-" "$tag_name" "${assets[@]}"
