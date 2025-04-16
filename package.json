@@ -1,18 +1,26 @@
 {
   "name": "solstice-language-server",
-  "description": "nano rust language server",
+  "displayName": "Solstice",
+  "description": "Ambitious language server for Solidity",
   "license": "MIT",
-  "version": "1.5.0",
+  "version": "0.1.0",
   "categories": [],
   "keywords": [
     "language-server",
-    "tower-lsp"
+    "Solidity",
+    "tracing",
+    "debugging"
   ],
+  "publisher": "ferranborreguero",
   "repository": {
-    "url": "https://github.com/IWANABETHATGUY/tower-lsp-boilerplate"
+    "url": "https://github.com/ferranbt/solstice",
+    "type": "git"
   },
   "engines": {
     "vscode": "^1.66.0"
+  },
+  "bugs": {
+    "url": "https://github.com/ferranbt/solstice/issues"
   },
   "enabledApiProposals": [],
   "activationEvents": [
@@ -205,6 +213,7 @@
     "lint": "eslint src --ext ts",
     "pretest": "npm run compile && npm run lint",
     "test": "node ./out/test/runTest.js",
+    "esbuild-base": "esbuild ./client/src/extension.ts --bundle --outfile=out/main.js --external:vscode --format=cjs --platform=node",
     "build": "webpack --config webpack.config.js",
     "package": "vsce package --no-dependencies",
     "publish": "vsce publish --no-dependencies"
@@ -219,6 +228,7 @@
     "electron-rebuild": "^1.11.0",
     "eslint": "^7.6.0",
     "glob": "^7.1.7",
+    "esbuild": "^0.15.5",
     "mocha": "^8.0.1",
     "typescript": "5.4.5",
     "vscode-test": "^1.4.0",
@@ -233,6 +243,5 @@
     "vscode-debugadapter": "1.45.0",
     "vscode-debugprotocol": "1.45.0",
     "vscode-languageclient": "9.0.1"
-  },
-  "packageManager": "pnpm@9.15.4+sha512.b2dc20e2fc72b3e18848459b37359a32064663e5627a51e4c74b2c29dd8e8e0491483c3abb40789cfd578bf362fb6ba8261b05f0387d76792ed6e23ea3b1b6a0"
+  }
 }
