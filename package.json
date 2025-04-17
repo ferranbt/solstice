@@ -17,7 +17,7 @@
     "type": "git"
   },
   "engines": {
-    "vscode": "^1.66.0"
+    "vscode": "^1.75.0"
   },
   "bugs": {
     "url": "https://github.com/ferranbt/solstice/issues"
@@ -26,7 +26,7 @@
   "activationEvents": [
     "onLanguage:sol"
   ],
-  "main": "./dist/extension.js",
+  "main": "./out/main.js",
   "contributes": {
     "languages": [
       {
@@ -213,7 +213,7 @@
     "lint": "eslint src --ext ts",
     "pretest": "npm run compile && npm run lint",
     "test": "node ./out/test/runTest.js",
-    "esbuild-base": "esbuild ./client/src/extension.ts --bundle --outfile=out/main.js --external:vscode --format=cjs --platform=node",
+    "esbuild-base": "esbuild ./client/extension.ts --bundle --outfile=out/main.js --external:vscode --format=cjs --platform=node",
     "build": "webpack --config webpack.config.js",
     "package": "vsce package --no-dependencies",
     "publish": "vsce publish --no-dependencies"
@@ -222,13 +222,14 @@
     "@types/glob": "^7.1.3",
     "@types/mocha": "^8.0.0",
     "@types/node": "^12.12.0",
+    "@types/vscode": "1.75.0",
     "@typescript-eslint/eslint-plugin": "^3.8.0",
     "@typescript-eslint/parser": "^3.8.0",
     "cross-env": "^7.0.2",
     "electron-rebuild": "^1.11.0",
+    "esbuild": "^0.15.5",
     "eslint": "^7.6.0",
     "glob": "^7.1.7",
-    "esbuild": "^0.15.5",
     "mocha": "^8.0.1",
     "typescript": "5.4.5",
     "vscode-test": "^1.4.0",
@@ -237,9 +238,9 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
+    "axios": "^1.8.4",
     "semver": "^7.7.1",
     "tar": "^7.4.3",
-    "axios": "^1.6.7",
     "vscode-debugadapter": "1.45.0",
     "vscode-debugprotocol": "1.45.0",
     "vscode-languageclient": "9.0.1"
