@@ -5,4 +5,4 @@ out/
 *.ast 
 *.vsix
 /debug
-/cache
+cache/
