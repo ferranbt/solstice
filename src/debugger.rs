@@ -52,7 +52,6 @@ impl Service for DapDebugger {
     }
 
     fn step_in(&self, _body: StepInArguments) {
-        println!("Step in");
         self.debug_trace.borrow_mut().step_in();
 
         self.client.send_event(dap::prelude::Event::Stopped(
@@ -69,7 +68,6 @@ impl Service for DapDebugger {
     }
 
     fn step_out(&self, _body: StepOutArguments) {
-        println!("Step out");
         self.debug_trace.borrow_mut().step_out();
 
         self.client.send_event(dap::prelude::Event::Stopped(
@@ -86,7 +84,6 @@ impl Service for DapDebugger {
     }
 
     fn step_back(&self, _body: dap::requests::StepBackArguments) {
-        println!("Step back");
         self.debug_trace.borrow_mut().prev();
 
         self.client.send_event(dap::prelude::Event::Stopped(
@@ -103,9 +100,7 @@ impl Service for DapDebugger {
     }
 
     fn next(&self, _body: dap::requests::NextArguments) {
-        println!("Next {}", self.debug_trace.borrow().indx);
         self.debug_trace.borrow_mut().next();
-        println!("Next2 {}", self.debug_trace.borrow().indx);
 
         // just stop right away
         self.client.send_event(dap::prelude::Event::Stopped(
@@ -122,7 +117,6 @@ impl Service for DapDebugger {
     }
 
     fn cont(&self, _body: ContinueArguments) {
-        println!("Continue");
         self.debug_trace.borrow_mut().cont();
 
         self.client.send_event(dap::prelude::Event::Stopped(
@@ -160,8 +154,6 @@ impl Service for DapDebugger {
     ) -> dap::responses::StackTraceResponse {
         let concrete_trace = self.debug_trace.borrow().trace();
         let len_frames = concrete_trace.stack_frames.len();
-
-        println!("trace {:?}", concrete_trace);
 
         let traces = concrete_trace
             .stack_frames
@@ -266,20 +258,14 @@ impl Debugger {
         // continue until the next statement in the same function
         let call_trace_length = self.trace.steps[self.indx].call_trace.len();
 
-        println!("call trace length {}", call_trace_length);
         while self.indx < self.trace.steps.len() - 1 {
             self.indx += 1;
-
             let step = &self.trace.steps[self.indx];
 
-            println!("testing {} {}", self.indx, step.call_trace.len());
-
             if matches!(step.kind, StepKind::FunctionDefinition(_)) {
-                println!("skipping function definition");
                 continue;
             }
             if step.call_trace.len() != call_trace_length {
-                println!("skipping function call");
                 continue;
             }
             return Some(self.indx);
@@ -339,7 +325,6 @@ impl Debugger {
     }
 
     pub fn trace(&self) -> DebugTraceStep {
-        println!("checking index {}", self.indx);
         self.trace.trace(self.indx)
     }
 }
