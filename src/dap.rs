@@ -1,9 +1,10 @@
 use dap::prelude::Server as InnerServer;
 use dap::{
     requests::{
-        DisconnectArguments, LaunchRequestArguments, NextArguments, ScopesArguments,
-        SetBreakpointsArguments, SetExceptionBreakpointsArguments, StackTraceArguments,
-        StepBackArguments, VariablesArguments,
+        ContinueArguments, DisconnectArguments, LaunchRequestArguments, NextArguments,
+        ScopesArguments, SetBreakpointsArguments, SetExceptionBreakpointsArguments,
+        StackTraceArguments, StepBackArguments, StepInArguments, StepOutArguments,
+        VariablesArguments,
     },
     responses::{
         ScopesResponse, SetBreakpointsResponse, SetExceptionBreakpointsResponse,
@@ -50,6 +51,12 @@ pub trait Service {
     fn next(&self, _body: NextArguments) {}
 
     fn step_back(&self, _body: StepBackArguments) {}
+
+    fn step_in(&self, _body: StepInArguments) {}
+
+    fn step_out(&self, _body: StepOutArguments) {}
+
+    fn cont(&self, _body: ContinueArguments) {}
 
     fn set_breakpoints(&self, _breakpoints: SetBreakpointsArguments) -> SetBreakpointsResponse {
         SetBreakpointsResponse {
@@ -110,6 +117,7 @@ impl<R: Read + Send, W: Write + Send> Server<R, W> {
             let rsp = req.success(dap::prelude::ResponseBody::Initialize(
                 dap::prelude::types::Capabilities {
                     supports_step_back: Some(true),
+                    supports_step_in_targets_request: Some(true),
                     ..Default::default()
                 },
             ));
@@ -181,11 +189,20 @@ impl<R: Read + Send, W: Write + Send> Server<R, W> {
                         tracing::error!("Failed to respond to Threads command: {}", e);
                     }
                 }
+                dap::prelude::Command::StepIn(body) => {
+                    service.step_in(body);
+                }
+                dap::prelude::Command::StepOut(body) => {
+                    service.step_out(body);
+                }
                 dap::prelude::Command::StepBack(body) => {
                     service.step_back(body);
                 }
                 dap::prelude::Command::Next(body) => {
                     service.next(body);
+                }
+                dap::prelude::Command::Continue(body) => {
+                    service.cont(body);
                 }
                 dap::prelude::Command::Scopes(body) => {
                     let rsp = service.scopes(body);
