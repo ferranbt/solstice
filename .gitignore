@@ -6,3 +6,4 @@ out/
 dist/
 *.vsix
 /debug
+/cache
