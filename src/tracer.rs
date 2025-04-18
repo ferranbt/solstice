@@ -720,18 +720,19 @@ impl DebugUnit {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum StepKind {
     FunctionDefinition(String),
     FunctionCall,
+
+    #[default]
     Statement,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DebugTrace {
     pub steps: Vec<DebugStep>,
     pub variables: HashMap<u64, Variable>,
-    pub indx: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -746,29 +747,9 @@ pub struct DebugTraceStep {
 }
 
 impl DebugTrace {
-    pub fn prev(&mut self) -> bool {
-        while self.indx > 0 {
-            self.indx -= 1;
-            if !matches!(self.steps[self.indx].kind, StepKind::FunctionDefinition(_)) {
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn next(&mut self) -> bool {
-        while self.indx < self.steps.len() - 1 {
-            self.indx += 1;
-            if !matches!(self.steps[self.indx].kind, StepKind::FunctionDefinition(_)) {
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn trace(&self) -> DebugTraceStep {
+    pub fn trace(&self, indx: usize) -> DebugTraceStep {
         let mut call_trace = Vec::new();
-        let step = self.steps.get(self.indx).unwrap();
+        let step = self.steps.get(indx).unwrap();
 
         // retrieve the call trace for this step
         for step_trace in step.call_trace.iter() {
@@ -784,10 +765,10 @@ impl DebugTrace {
         }
     }
 
-    pub fn scope(&self) -> Vec<Variable> {
+    pub fn scope(&self, indx: usize) -> Vec<Variable> {
         // so the frame id is the id in the call trace
         // for now lets keep it simple and assume it is the current step
-        let step = self.steps.get(self.indx).unwrap();
+        let step = self.steps.get(indx).unwrap();
         step.variables_in_scope
             .iter()
             .map(|id| self.variables.get(&(*id as u64)).unwrap().clone())
@@ -795,7 +776,7 @@ impl DebugTrace {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DebugStep {
     pub location: SourceLocation,
     pub variables_in_scope: Vec<usize>,
@@ -946,7 +927,6 @@ pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTra
 
     Ok(DebugTrace {
         steps,
-        indx: 0,
         variables: variable_definitions,
     })
 }

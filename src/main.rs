@@ -1,7 +1,7 @@
 use builder::DefinitionIndex;
 use built_info::PKG_VERSION;
 use clap::Parser;
-use debugger::Debugger;
+use debugger::DapDebugger;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solang::sema::ast;
@@ -712,7 +712,7 @@ fn run_dap_server(workspace_path: &str) -> u64 {
         let debug_trace = example1(&workspace_path, "/tmp/debug_trace.json").unwrap();
 
         let mut server = DapServer::new(input, output);
-        server.serve(|client| Debugger::new(client, debug_trace));
+        server.serve(|client| DapDebugger::new(client, debug_trace));
     });
 
     port
