@@ -27,19 +27,11 @@ impl DapDebugger {
 }
 
 impl Service for DapDebugger {
-    fn launch(&self, _body: LaunchRequestArguments) {}
-
-    fn threads(&self) -> ThreadsResponse {
-        let resp = ThreadsResponse {
-            threads: vec![Thread {
-                id: 1,
-                name: "Main Thread".to_string(),
-            }],
-        };
-
+    fn launch(&self, _body: LaunchRequestArguments) {
+        // stop right away since we have already loaded the trace
         self.client.send_event(dap::prelude::Event::Stopped(
             dap::events::StoppedEventBody {
-                reason: dap::types::StoppedEventReason::Breakpoint,
+                reason: dap::types::StoppedEventReason::Step,
                 description: None,
                 thread_id: Some(1),
                 preserve_focus_hint: None,
@@ -48,8 +40,15 @@ impl Service for DapDebugger {
                 hit_breakpoint_ids: None,
             },
         ));
+    }
 
-        resp
+    fn threads(&self) -> ThreadsResponse {
+        ThreadsResponse {
+            threads: vec![Thread {
+                id: 1,
+                name: "Main Thread".to_string(),
+            }],
+        }
     }
 
     fn step_in(&self, _body: StepInArguments) {
