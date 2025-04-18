@@ -5,9 +5,9 @@ use std::cell::RefCell;
 
 use crate::dap::requests::{
     ContinueArguments, LaunchRequestArguments, SetBreakpointsArguments, StepInArguments,
-    StepOutArguments,
+    StepOutArguments, VariablesArguments,
 };
-use crate::dap::responses::{SetBreakpointsResponse, ThreadsResponse};
+use crate::dap::responses::{SetBreakpointsResponse, ThreadsResponse, VariablesResponse};
 use crate::dap::Client;
 use crate::dap::Service;
 use crate::tracer::{DebugTrace, DebugTraceStep, StepKind, Variable};
@@ -212,6 +212,10 @@ impl Service for DapDebugger {
             breakpoints: resp_breakpoints,
         }
     }
+
+    fn variables(&self, _body: VariablesArguments) -> VariablesResponse {
+        VariablesResponse { variables: vec![] }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -326,6 +330,11 @@ impl Debugger {
 
     pub fn trace(&self) -> DebugTraceStep {
         self.trace.trace(self.indx)
+    }
+
+    pub fn get_variable(&self, id: u64) {
+        let step = &self.trace.steps[self.indx];
+        let val = self.trace.variables.get(&id).unwrap();
     }
 }
 

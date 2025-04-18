@@ -1,5 +1,6 @@
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
+use alloy_rpc_types::serde_helpers::storage;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
 use foundry_compilers::artifacts::sourcemap::Jump;
 use foundry_compilers::artifacts::sourcemap::{parse, SourceMap};
@@ -9,6 +10,7 @@ use foundry_compilers::resolver::parse::SolData;
 use foundry_compilers::ProjectPathsConfig;
 use revm_inspectors::tracing::types::CallTraceStep;
 use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -16,6 +18,8 @@ use std::fs;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crate::state::Type;
 
 #[derive(Deserialize)]
 struct DebuggerContext {
@@ -133,7 +137,7 @@ fn load_artifacts(
     Ok(artifacts)
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SourceLocation {
     pub line: usize,
     pub column: usize,
@@ -720,7 +724,7 @@ impl DebugUnit {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub enum StepKind {
     FunctionDefinition(String),
     FunctionCall,
@@ -729,7 +733,7 @@ pub enum StepKind {
     Statement,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct DebugTrace {
     pub steps: Vec<DebugStep>,
     pub variables: HashMap<u64, Variable>,
@@ -776,7 +780,7 @@ impl DebugTrace {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct DebugStep {
     pub location: SourceLocation,
     pub variables_in_scope: Vec<usize>,
@@ -785,6 +789,7 @@ pub struct DebugStep {
     pub kind: StepKind,
     pub memory: Bytes,
     pub stack: Vec<Bytes>,
+    pub storage: HashMap<Bytes, Bytes>,
 }
 
 impl From<&DebugStep> for StackFrame {
@@ -818,6 +823,9 @@ pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTra
     let mut call_trace = Vec::new();
     let mut expecting_function = true;
 
+    // map each contract to its current storage
+    let mut contracts_storage = HashMap::new();
+
     for node in context.debug_arena.iter() {
         for step in node.steps.iter() {
             let memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
@@ -828,6 +836,23 @@ pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTra
                 .iter()
                 .map(|b| Bytes::from(b.as_le_bytes().to_vec()))
                 .collect();
+
+            // the storage for the current state is before any key has been inserted
+            let storage = contracts_storage
+                .get(&step.contract)
+                .unwrap_or(&HashMap::new())
+                .clone();
+
+            // storage always have to be processed
+            if let Some(storage_change) = step.storage_change {
+                contracts_storage
+                    .entry(step.contract)
+                    .or_insert(HashMap::new())
+                    .insert(
+                        Bytes::from(storage_change.key.as_le_bytes().to_vec()),
+                        Bytes::from(storage_change.value.as_le_bytes().to_vec()),
+                    );
+            }
 
             if let Some(contract_name) = context.contracts.identified_contracts.get(&step.contract)
             {
@@ -847,6 +872,7 @@ pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTra
                                 path: debug_unit.path.clone(),
                                 memory: memory.clone(),
                                 stack: stack.clone(),
+                                storage: storage.clone(),
                                 variables_in_scope: vec![],
                                 call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
                                 kind: StepKind::FunctionDefinition(func.name.clone()),
@@ -892,6 +918,7 @@ pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTra
                                 variables_in_scope,
                                 memory: memory.clone(),
                                 stack: stack,
+                                storage,
                                 call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
                                 kind: StepKind::FunctionCall,
                             });
@@ -902,6 +929,7 @@ pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTra
                                 variables_in_scope,
                                 memory: memory.clone(),
                                 stack: stack,
+                                storage,
                                 call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
                                 kind: StepKind::Statement,
                             });
@@ -960,7 +988,7 @@ pub struct Block {
     pub location: SourceLocation,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Variable {
     pub name: String,
     pub id: u64,
@@ -1070,7 +1098,8 @@ impl Forge {
             .arg("--optimizer-runs")
             .arg("0")
             .arg("--optimize")
-            .arg("false");
+            .arg("false")
+            .arg("-vvvvv"); // we need to run with this flag to export the storage changes
 
         cmd.clone()
     }
@@ -1251,7 +1280,11 @@ mod tests {
     }
 
     #[test]
-    fn test_debugger_traces() {
+    fn test_debugger_traces() -> eyre::Result<()> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+
         let workspace_path_string = std::env::var("CARGO_MANIFEST_DIR")
             .expect("CARGO_MANIFEST_DIR not set")
             + "/src/testcases";
@@ -1268,19 +1301,45 @@ mod tests {
 
                 // use as test path for the output command the relative path with respect to the workspace path
                 let test_path = path.strip_prefix(workspace_path).unwrap();
-                let debug_trace_path = "/tmp/debug_trace.json";
 
-                let forge =
-                    Forge::debug("test_main", test_path.to_str().unwrap(), debug_trace_path);
+                // write the metadata information
+                let log_output_dir = format!("trace/{}", timestamp);
+                std::fs::create_dir_all(&log_output_dir)?;
+
+                let debug_trace_path = {
+                    let path = std::path::absolute(format!("{}/forge_trace.json", log_output_dir))
+                        .expect("Failed to get absolute path");
+                    path.to_string_lossy().into_owned()
+                };
+
+                let forge = Forge::debug(
+                    "test_main",
+                    test_path.to_str().unwrap(),
+                    debug_trace_path.as_str(),
+                );
                 let _ = execute_command(workspace_path, forge).unwrap();
 
-                let debug_trace = example1(workspace_path, debug_trace_path).unwrap();
+                let debug_trace = example1(workspace_path, debug_trace_path.as_str()).unwrap();
+
+                // save the debug trace
+                let debug_trace_json = serde_json::to_string(&debug_trace).unwrap();
+                std::fs::write(
+                    format!("{}/debug_trace.json", log_output_dir),
+                    debug_trace_json,
+                )?;
 
                 let formatted = debug_trace.to_debug_format(workspace_path);
+                std::fs::write(
+                    format!("{}/debug_trace.txt", log_output_dir),
+                    formatted.clone(),
+                )?;
+
                 let expected = fs::read_to_string(expected_path).unwrap();
 
                 assert_eq!(formatted, expected);
             }
         }
+
+        Ok(())
     }
 }
