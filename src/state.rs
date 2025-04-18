@@ -28,7 +28,7 @@ use std::str::FromStr;
 
 use crate::tracer::IcPcMap;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum Type {
     /// `address $(payable)?`
     Address,
@@ -803,7 +803,7 @@ impl From<MemoryType> for Type {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TypeArray {
     pub ty: Box<Type>,
     pub size: Option<u16>,
@@ -828,7 +828,7 @@ impl<'a> Arbitrary<'a> for TypeArray {
 }
 
 /// A tuple type.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TypeTuple {
     pub types: Vec<(String, Type)>,
 }
@@ -855,7 +855,7 @@ impl<'a> Arbitrary<'a> for TypeTuple {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TypeMapping {
     pub key: Box<Type>,
     pub value: Box<Type>,
