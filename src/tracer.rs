@@ -18,6 +18,7 @@ use std::fs;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use thiserror::Error;
 
 use crate::state::Type;
 
@@ -801,12 +802,36 @@ impl From<&DebugStep> for StackFrame {
     }
 }
 
-pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTrace> {
+#[derive(Error, Debug)]
+pub enum TraceError {
+    #[error("Failed to read file: {0} {1}")]
+    FailedToReadFile(String, std::io::Error),
+
+    #[error("Failed to parse debug dump JSON: {0} {1}")]
+    FailedToParseDebugDump(String, serde_json::Error),
+
+    #[error("Found function entry without call")]
+    FoundFunctionEntryWithoutCall,
+
+    #[error("Found function exit without call")]
+    FoundFunctionExitWithoutCall,
+
+    #[error("Found instruction without function entry")]
+    FoundInstructionWithoutFunctionEntry,
+
+    #[error("Last step should have call trace equal to 0")]
+    LastStepShouldHaveCallTraceEqualZero,
+
+    #[error("Function with incorrect exit pc: {0} {1} {2}")]
+    FunctionWithIncorrectExitPc(String, usize, String),
+}
+
+pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTrace, TraceError> {
     let content = fs::read_to_string(trace_path)
-        .map_err(|e| eyre::eyre!("Failed to read debug dump file: {}", e))?;
+        .map_err(|e| TraceError::FailedToReadFile(trace_path.to_string(), e))?;
 
     let context: DebuggerContext = serde_json::from_str(&content)
-        .map_err(|e| eyre::eyre!("Failed to parse debug dump JSON: {}", e))?;
+        .map_err(|e| TraceError::FailedToParseDebugDump(trace_path.to_string(), e))?;
 
     let contracts_involved: HashSet<String> = context
         .contracts
@@ -861,7 +886,7 @@ pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTra
                     for func in debug_unit.functions.values() {
                         if func.entry_pc == step.pc {
                             if !expecting_function {
-                                panic!("Found function entry without call");
+                                return Err(TraceError::FoundFunctionEntryWithoutCall);
                             }
                             expecting_function = false;
 
@@ -889,14 +914,18 @@ pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTra
                     for func in debug_unit.functions.values() {
                         if func.exit_pc == step.pc {
                             if expecting_function {
-                                panic!("Found function exit without call");
+                                return Err(TraceError::FoundFunctionExitWithoutCall);
                             }
 
                             // pop the last call trace and make sure the function is the same
                             let last_call = call_trace.pop();
                             if last_call.is_some() && last_call.unwrap().0.name.clone() != func.name
                             {
-                                panic!("function {:?} has exit pc {:?} but the last call trace is {:?}", func.name, func.exit_pc, last_call.unwrap().0.name);
+                                return Err(TraceError::FunctionWithIncorrectExitPc(
+                                    func.name.clone(),
+                                    func.exit_pc,
+                                    last_call.unwrap().0.name.clone(),
+                                ));
                             }
                         }
                     }
@@ -906,7 +935,7 @@ pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTra
                     {
                         // get a list of all the calltrace ids
                         if expecting_function {
-                            panic!("Found function call without function entry");
+                            return Err(TraceError::FoundInstructionWithoutFunctionEntry);
                         }
 
                         if matches!(instruction.kind, InstructionKind::FunctionCall) {
@@ -942,7 +971,7 @@ pub fn example1(workspace_path: &str, trace_path: &str) -> eyre::Result<DebugTra
 
     // the last step should have call trace equal to 0
     if steps.last().unwrap().call_trace.len() != 0 {
-        panic!("Last step should have call trace equal to 0");
+        return Err(TraceError::LastStepShouldHaveCallTraceEqualZero);
     }
 
     // loop over all the debug units and get the variable definitions
@@ -1319,7 +1348,8 @@ mod tests {
                 );
                 let _ = execute_command(workspace_path, forge).unwrap();
 
-                let debug_trace = example1(workspace_path, debug_trace_path.as_str()).unwrap();
+                let debug_trace =
+                    generate_trace(workspace_path, debug_trace_path.as_str()).unwrap();
 
                 // save the debug trace
                 let debug_trace_json = serde_json::to_string(&debug_trace).unwrap();

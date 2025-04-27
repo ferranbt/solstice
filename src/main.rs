@@ -11,7 +11,7 @@ use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::request::GotoTypeDefinitionResponse;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tracer::{example1, execute_command};
+use tracer::{execute_command, generate_trace};
 
 use crate::builder::DefinitionType;
 use crate::builder::{Builder, Files, GlobalCache};
@@ -709,7 +709,7 @@ fn run_dap_server(workspace_path: &str) -> u64 {
         let input = BufReader::new(stream.try_clone().unwrap());
         let output = BufWriter::new(stream);
 
-        let debug_trace = example1(&workspace_path, "/tmp/debug_trace.json").unwrap();
+        let debug_trace = generate_trace(&workspace_path, "/tmp/debug_trace.json").unwrap();
 
         let mut server = DapServer::new(input, output);
         server.serve(|client| DapDebugger::new(client, debug_trace));
