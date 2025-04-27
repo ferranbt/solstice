@@ -21,9 +21,6 @@ jobs:
           override: true
           components: rustfmt
 
-      - name: Build
-        run: cargo build --verbose
-
       - name: Lint
         run: cargo clippy -- -D warnings
 
