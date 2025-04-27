@@ -549,7 +549,7 @@ impl StatementVisitor {
             .iter()
             .enumerate()
             .filter(|(_, elem)| elem.offset() == start && elem.length() == length)
-            .last()
+            .next_back()
             .and_then(|(idx, _)| pc_ic_map.get(idx))
     }
 
