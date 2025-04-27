@@ -1,6 +1,5 @@
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
-use alloy_rpc_types::serde_helpers::storage;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
 use foundry_compilers::artifacts::sourcemap::Jump;
 use foundry_compilers::artifacts::sourcemap::{parse, SourceMap};
@@ -20,8 +19,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
 
-use crate::state::Type;
-
 #[derive(Deserialize)]
 struct DebuggerContext {
     pub debug_arena: Vec<DebugNode>,
@@ -30,7 +27,7 @@ struct DebuggerContext {
 
 #[derive(Deserialize)]
 pub struct DebugNode {
-    pub kind: String,
+    pub _kind: String,
     pub steps: Vec<CallTraceStep>,
 }
 
@@ -175,14 +172,14 @@ impl StatementVisitor {
     ) -> Self {
         Self {
             source_map: parse(&deployed_bytecode.clone().source_map.unwrap()).unwrap(),
-            pc_ic_map: IcPcMap::new(&deployed_bytecode.bytes().unwrap()),
+            pc_ic_map: IcPcMap::new(deployed_bytecode.bytes().unwrap()),
             source: source.clone(),
             deployed_source_map: parse(&bytecode.clone().source_map.unwrap()).unwrap(),
-            deployed_pc_ic_map: IcPcMap::new(&bytecode.bytes().unwrap()),
+            deployed_pc_ic_map: IcPcMap::new(bytecode.bytes().unwrap()),
             in_constructor: false,
             contract_node: None,
             debug_unit: DebugUnit {
-                name: String::new(),
+                _name: String::new(),
                 path: path.clone(),
                 functions: HashMap::new(),
                 variables: Vec::new(),
@@ -326,8 +323,8 @@ impl StatementVisitor {
             name,
             entry_pc: self.get_entry_pc_for_function(node).unwrap(),
             root_block,
-            parameters,
-            exit_pc: exit_pc,
+            _parameters: parameters,
+            exit_pc,
         };
 
         self.in_constructor = false;
@@ -352,8 +349,8 @@ impl StatementVisitor {
             .collect();
 
         // Find the match that comes after a JUMP OUT instruction
-        for i in 0..matches.len() {
-            let (idx, _) = matches[i];
+        for (idx, _) in &matches {
+            let idx = *idx;
 
             // Check if there's a previous instruction with JUMP OUT
             if idx > 0 {
@@ -890,7 +887,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                             }
                             expecting_function = false;
 
-                            let is_first_step = steps.len() == 0;
+                            let is_first_step = steps.is_empty();
 
                             steps.push(DebugStep {
                                 location: func.root_block.location.clone(),
@@ -946,7 +943,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                                 path: debug_unit.path.clone(),
                                 variables_in_scope,
                                 memory: memory.clone(),
-                                stack: stack,
+                                stack,
                                 storage,
                                 call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
                                 kind: StepKind::FunctionCall,
@@ -957,7 +954,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                                 path: debug_unit.path.clone(),
                                 variables_in_scope,
                                 memory: memory.clone(),
-                                stack: stack,
+                                stack,
                                 storage,
                                 call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
                                 kind: StepKind::Statement,
@@ -970,7 +967,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
     }
 
     // the last step should have call trace equal to 0
-    if steps.last().unwrap().call_trace.len() != 0 {
+    if !steps.last().unwrap().call_trace.is_empty() {
         return Err(TraceError::LastStepShouldHaveCallTraceEqualZero);
     }
 
@@ -990,7 +987,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
 
 #[derive(Debug, Clone)]
 pub struct DebugUnit {
-    pub name: String,
+    pub _name: String,
     pub path: String,
     pub functions: HashMap<String, Function>,
     pub variables: Vec<Variable>,
@@ -1002,7 +999,7 @@ pub struct Function {
     pub entry_pc: usize,
     pub exit_pc: usize,
     pub root_block: Block,
-    pub parameters: Vec<Variable>,
+    pub _parameters: Vec<Variable>,
 }
 
 #[derive(Debug, Clone, Default)]

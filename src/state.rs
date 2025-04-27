@@ -2,13 +2,11 @@ use alloy_primitives::hex;
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use alloy_primitives::FixedBytes;
-use alloy_primitives::Signed;
 use alloy_primitives::I256;
-use alloy_primitives::I8;
 use alloy_primitives::U256;
 use arbitrary::{Arbitrary, Unstructured};
 use core::panic;
-use foundry_compilers::artifacts::ast::{self, Ast, Node, NodeType};
+use foundry_compilers::artifacts::ast::{Ast, Node, NodeType};
 use foundry_compilers::artifacts::sourcemap::parse;
 use foundry_compilers::artifacts::BytecodeObject;
 use foundry_compilers::artifacts::CompactBytecode;
@@ -19,9 +17,7 @@ use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::env::var;
-use std::io::Read;
 use std::io::Write;
-use std::num;
 use std::process::Command;
 use std::process::Stdio;
 use std::str::FromStr;
@@ -161,7 +157,7 @@ impl Type {
                 let (_offsets, last) = StateReference::compute_offsets(types.to_vec());
                 U256::from_be_bytes(last.slot.0).as_limbs()[0] as u32
             }
-            Type::Mapping(TypeMapping { key, value }) => !unimplemented!(),
+            Type::Mapping(_) => 1,
         }
     }
 
@@ -902,16 +898,8 @@ impl<'a> Arbitrary<'a> for TypeMapping {
     }
 }
 
-enum VariableKind {
-    Storage(u64),
-    Memory(u64),
-    Stack(u64),
-}
-
 struct StateReference {
     storage: HashMap<FixedBytes<32>, FixedBytes<32>>,
-    memory: Bytes,
-    stack: Vec<Bytes>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -921,11 +909,6 @@ struct StoragePosition {
 }
 
 impl StoragePosition {
-    fn set_slot(&mut self, indx: u32) {
-        self.slot = FixedBytes::<32>::from_slice(&U256::from(indx).to_be_bytes::<32>());
-        self.index_in_slot = 0;
-    }
-
     fn advance_slot_num(&mut self, num: u32) {
         self.slot = FixedBytes::<32>::from_slice(
             &(U256::from_be_bytes(self.slot.0) + U256::from(num)).to_be_bytes::<32>(),
@@ -953,11 +936,7 @@ const SLOT_SIZE: u32 = 32;
 
 impl StateReference {
     fn new(storage: HashMap<FixedBytes<32>, FixedBytes<32>>) -> Self {
-        Self {
-            storage,
-            memory: Bytes::new(),
-            stack: Vec::new(),
-        }
+        Self { storage }
     }
 
     fn resolve_type(&self, ty: Type, offset: StoragePosition) -> JsonValue {
@@ -1083,7 +1062,7 @@ impl StateReference {
 
                     let (typ_num_slots, typ_num_bytes) = (ty.num_storage_slots(), ty.get_bytes());
 
-                    for i in 0..length {
+                    for _i in 0..length {
                         let val = self.resolve_type(*ty.clone(), element_position.clone());
 
                         if typ_num_slots == 1
@@ -1104,7 +1083,7 @@ impl StateReference {
             }
             Type::Tuple(TypeTuple { types }) => {
                 let mut map = serde_json::Map::new();
-                let (offsets, last_storage) = StateReference::compute_offsets(types.clone());
+                let (offsets, _last_storage) = StateReference::compute_offsets(types.clone());
 
                 for ((name, ty), (_, local_offset)) in types.into_iter().zip(offsets.into_iter()) {
                     let mut global_location = offset.clone();
@@ -1157,7 +1136,7 @@ impl StateReference {
     pub fn resolve_vars(&self, vars: Vec<(String, Type)>) -> JsonValue {
         let mut map = serde_json::Map::new();
 
-        let (offsets, last_storage) = StateReference::compute_offsets(vars.clone());
+        let (offsets, _last_storage) = StateReference::compute_offsets(vars.clone());
 
         for ((name, ty), (_, offset)) in vars.into_iter().zip(offsets.into_iter()) {
             map.insert(name, self.resolve_type(ty, offset));
@@ -1636,7 +1615,7 @@ pub struct CompilerOutput {
     pub bin: Bytes,
 
     #[serde(rename = "srcmap")]
-    pub srcmap: String,
+    pub _srcmap: String,
 
     /// The runtime bytecode
     #[serde(rename = "bin-runtime")]
@@ -1748,7 +1727,7 @@ pub fn compile_contract(source: &str) -> eyre::Result<CompilerOutput> {
             bin: contract.bin.clone(),
             bin_runtime: contract.bin_runtime.clone(),
             srcmap_runtime: contract.srcmap_runtime.clone(),
-            srcmap: contract.srcmap.clone(),
+            _srcmap: contract.srcmap.clone(),
             ast: source.ast.clone(),
         };
         Ok(output)
@@ -1774,9 +1753,7 @@ mod tests {
     use alloy_sol_types::sol;
     use alloy_transport::BoxTransport;
     use arbitrary::Unstructured;
-    use foundry_compilers::artifacts::BytecodeObject;
-    use std::io::Write;
-    use std::process::{Command, Stdio};
+    use thiserror::Error;
 
     type AnvilProvider = FillProvider<
         JoinFill<
@@ -1883,7 +1860,7 @@ mod tests {
                 .collect::<Vec<Bytes>>();
 
             // Concatenate all bytes into a single Bytes object
-            let memory = memory.iter().fold(Bytes::new(), |mut acc, bytes| {
+            let memory = memory.iter().fold(Bytes::new(), |acc, bytes| {
                 let mut new_bytes = vec![0u8; acc.len() + bytes.len()];
                 new_bytes[..acc.len()].copy_from_slice(&acc);
                 new_bytes[acc.len()..].copy_from_slice(bytes);
@@ -1940,9 +1917,11 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Error, Debug)]
     enum DeployError {
+        #[error("Recoverable error: {0}")]
         RecoverableError(String),
+        #[error("Fatal error: {0}")]
         FatalError(String),
     }
 
