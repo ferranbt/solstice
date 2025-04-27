@@ -10,6 +10,11 @@ contract FooTest is Test {
     Example[2][] second_storage;
 
     function test_Example() external {
+        string memory extra = "test strccxxxxxing";
+
+        Parent parent = new Parent();
+        parent.setOtherValue(1);
+        
         uint256 value = block.number; // Non-constant value
         value = value + 1;
         if (value > 10) {

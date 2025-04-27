@@ -12,6 +12,7 @@ use foundry_compilers::artifacts::ast::{self, Ast, Node, NodeType};
 use foundry_compilers::artifacts::sourcemap::parse;
 use foundry_compilers::artifacts::BytecodeObject;
 use foundry_compilers::artifacts::CompactBytecode;
+use itertools::Itertools;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
@@ -161,7 +162,7 @@ impl Type {
                 let (_offsets, last) = StateReference::compute_offsets(types.to_vec());
                 U256::from_be_bytes(last.slot.0).as_limbs()[0] as u32
             }
-            Type::Mapping(TypeMapping { key, value }) => !unimplemented!(),
+            Type::Mapping(TypeMapping { key, value }) => 1,
         }
     }
 
@@ -908,16 +909,16 @@ enum VariableKind {
     Stack(u64),
 }
 
-struct StateReference {
+pub struct StateReference {
     storage: HashMap<FixedBytes<32>, FixedBytes<32>>,
     memory: Bytes,
     stack: Vec<Bytes>,
 }
 
 #[derive(Default, Clone, Debug)]
-struct StoragePosition {
-    slot: FixedBytes<32>,
-    index_in_slot: u32,
+pub struct StoragePosition {
+    pub slot: FixedBytes<32>,
+    pub index_in_slot: u32,
 }
 
 impl StoragePosition {
@@ -952,7 +953,7 @@ impl StoragePosition {
 const SLOT_SIZE: u32 = 32;
 
 impl StateReference {
-    fn new(storage: HashMap<FixedBytes<32>, FixedBytes<32>>) -> Self {
+    pub fn new(storage: HashMap<FixedBytes<32>, FixedBytes<32>>) -> Self {
         Self {
             storage,
             memory: Bytes::new(),
@@ -960,7 +961,7 @@ impl StateReference {
         }
     }
 
-    fn resolve_type(&self, ty: Type, offset: StoragePosition) -> JsonValue {
+    pub fn resolve_type(&self, ty: Type, offset: StoragePosition) -> JsonValue {
         match ty {
             Type::Address | Type::Bool | Type::FixedBytes(_) | Type::Uint(_) | Type::Int(_) => {
                 let num_bytes = ty.get_bytes();
@@ -1070,7 +1071,9 @@ impl StateReference {
                     let length_bytes = if let Some(bytes) = self.storage.get(&offset.slot) {
                         bytes
                     } else {
-                        panic!("Could not find length at slot {}", hex::encode(offset.slot));
+                        // return an empty array of FixedBytes<32>
+                        let empty = FixedBytes::<32>::default();
+                        &empty.clone()
                     };
                     let length = U256::from_be_bytes(length_bytes.0).as_limbs()[0] as u32;
 
@@ -1157,7 +1160,10 @@ impl StateReference {
     pub fn resolve_vars(&self, vars: Vec<(String, Type)>) -> JsonValue {
         let mut map = serde_json::Map::new();
 
-        let (offsets, last_storage) = StateReference::compute_offsets(vars.clone());
+        let (offsets, _last_storage) = StateReference::compute_offsets(vars.clone());
+
+        println!("vars {:?}", vars);
+        println!("offsets {:?}", offsets);
 
         for ((name, ty), (_, offset)) in vars.into_iter().zip(offsets.into_iter()) {
             map.insert(name, self.resolve_type(ty, offset));
@@ -1168,7 +1174,7 @@ impl StateReference {
 }
 
 #[derive(Deserialize, Debug)]
-struct TypeNode {
+pub struct TypeNode {
     #[serde(rename = "nodeType")]
     pub node_type: TypeNodeType,
 
@@ -1196,11 +1202,21 @@ enum TypeNodeType {
     Literal,
 }
 
-fn parse_variable_declaration_type(typ: &TypeNode, structs: &HashMap<usize, Node>) -> Type {
+pub fn parse_variable_declaration_type(typ: &TypeNode, structs: &HashMap<usize, Node>) -> Type {
     match typ.node_type {
         TypeNodeType::UserDefinedTypeName => {
             let reference_declaration = typ.attribute::<usize>("referencedDeclaration").unwrap();
+
+            //println!("reference declaration {:?}", reference_declaration);
+            //println!("state {:?}", structs.keys().sorted());
+            //println!("get {:?}", structs.get(&reference_declaration));
+
             let struct_declaration = structs.get(&reference_declaration).unwrap();
+
+            if struct_declaration.node_type == NodeType::ContractDefinition {
+                // If it references a contract, store like an address
+                return Type::Address;
+            }
 
             let members = struct_declaration
                 .attribute::<Vec<Node>>("members")
@@ -1286,6 +1302,13 @@ fn parse_variable_declaration_type(typ: &TypeNode, structs: &HashMap<usize, Node
     }
 }
 
+pub fn extract_type(node: &Node, structs: &HashMap<usize, Node>) -> Type {
+    let typ: TypeNode =
+        serde_json::from_value(node.other.get("typeName").unwrap().clone()).unwrap();
+
+    parse_variable_declaration_type(&typ, &structs)
+}
+
 fn extract_state_variables(ast: &Ast) -> Vec<(String, Type)> {
     let mut structs = HashMap::new();
 
@@ -1364,9 +1387,9 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
-enum Location {
-    Storage,
+#[derive(Clone, Debug, Serialize)]
+pub enum Location {
+    Storage { slot: FixedBytes<32>, index: u32 },
     Memory,
     Stack,
 }
@@ -1413,7 +1436,9 @@ fn extract_non_state_variables(ast: &Ast, bytecode: CompactBytecode) -> HashMap<
             .unwrap()
             .as_str()
         {
-            "storage" => Location::Storage,
+            "storage" => {
+                panic!("storage location not supported here");
+            }
             "memory" => Location::Memory,
             "default" => Location::Stack,
             _ => unreachable!(),
@@ -1449,9 +1474,15 @@ struct Assignment {
     stack_index: usize,
 }
 
-fn resolve_memory_assignment(typ: Type, offset_bytes: usize, memory: Bytes) -> serde_json::Value {
+pub fn resolve_memory_assignment(
+    typ: Type,
+    offset_bytes: usize,
+    memory: Bytes,
+) -> serde_json::Value {
     match typ {
         Type::String | Type::Bytes => {
+            println!("offset_bytes {:?}", offset_bytes);
+
             // Read the length from the first 32 bytes at the offset
             if offset_bytes + 32 > memory.len() {
                 return serde_json::Value::Null;
@@ -1461,11 +1492,15 @@ fn resolve_memory_assignment(typ: Type, offset_bytes: usize, memory: Bytes) -> s
             let length = U256::from_be_bytes::<32>(length_bytes.try_into().unwrap());
             let length_usize = length.as_limbs()[0] as usize;
 
+            println!("length_usize {:?}", length_usize);
+
             // Read the actual string data that follows the length
             let data_offset = offset_bytes + 32;
             if data_offset + length_usize > memory.len() {
                 return serde_json::Value::Null;
             }
+
+            println!("data_offset {:?}", data_offset);
 
             let string_bytes = memory[data_offset..data_offset + length_usize].to_vec();
             typ.decode_bytes(&string_bytes).unwrap()

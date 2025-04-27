@@ -1,7 +1,13 @@
+use alloy_primitives::Bytes;
+use alloy_primitives::FixedBytes;
+use alloy_primitives::U256;
 use dap::types::PresentationHint;
 use dap::types::StackFramePresentationhint;
 use dap::types::Thread;
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use crate::dap::requests::{
     ContinueArguments, LaunchRequestArguments, SetBreakpointsArguments, StepInArguments,
@@ -10,7 +16,15 @@ use crate::dap::requests::{
 use crate::dap::responses::{SetBreakpointsResponse, ThreadsResponse, VariablesResponse};
 use crate::dap::Client;
 use crate::dap::Service;
+use crate::state::resolve_memory_assignment;
+use crate::state::Location;
+use crate::state::StateReference;
+use crate::state::StoragePosition;
+use crate::state::Type;
+use crate::tracer::SourceLocation;
 use crate::tracer::{DebugTrace, DebugTraceStep, StepKind, Variable};
+use rand::Rng;
+use std::hash::Hasher;
 
 pub struct DapDebugger {
     debug_trace: RefCell<Debugger>,
@@ -213,8 +227,17 @@ impl Service for DapDebugger {
         }
     }
 
-    fn variables(&self, _body: VariablesArguments) -> VariablesResponse {
-        VariablesResponse { variables: vec![] }
+    fn variables(&self, body: VariablesArguments) -> VariablesResponse {
+        println!("variables arguments {:?}", body);
+
+        let variable = self
+            .debug_trace
+            .borrow()
+            .get_variable(body.variables_reference);
+
+        println!("variables {:?}", variable);
+
+        variable
     }
 }
 
@@ -223,6 +246,9 @@ pub struct Debugger {
     pub trace: DebugTrace,
     pub indx: usize,
     pub breakpoints: Vec<Breakpoint>,
+
+    // i64 because DAP uses that
+    pub variable_cache: Arc<Mutex<HashMap<i64, serde_json::Map<String, serde_json::Value>>>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -237,6 +263,7 @@ impl Debugger {
             trace,
             indx: 0,
             breakpoints: vec![],
+            variable_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -332,9 +359,169 @@ impl Debugger {
         self.trace.trace(self.indx)
     }
 
-    pub fn get_variable(&self, id: u64) {
+    pub fn get_variable(&self, id: i64) -> VariablesResponse {
+        println!("query variable {:?}", id);
+
+        // Try to use first the values from the cache
+        let cache = self.variable_cache.lock().unwrap();
+        if let Some(value) = cache.get(&id) {
+            println!("it is nested");
+
+            let vars = value
+                .iter()
+                .map(|(k, v)| dap::types::Variable {
+                    name: k.clone(),
+                    value: v.to_string(),
+                    ..Default::default()
+                })
+                .collect();
+
+            return VariablesResponse { variables: vars };
+        }
+        drop(cache); // Explicitly drop the lock before proceeding
+
+        let id_u64 = id as u64;
+
         let step = &self.trace.steps[self.indx];
-        let val = self.trace.variables.get(&id).unwrap();
+        let val = self.trace.variables.get(&id_u64).unwrap();
+
+        println!("get_variable {:?} location {:?}", id, val.state_location);
+
+        match val.state_location {
+            Location::Storage { slot, index } => {
+                let binding = HashMap::new();
+                let contract_storage = step.storage.get(&step.contract_address).unwrap_or(&binding);
+
+                let contract_storage: HashMap<FixedBytes<32>, FixedBytes<32>> = contract_storage
+                    .iter()
+                    .map(|(k, v)| (FixedBytes::from_slice(k), FixedBytes::from_slice(v)))
+                    .collect();
+
+                println!("contract storage {:?}", contract_storage);
+
+                let state_resolver = StateReference::new(contract_storage);
+                let value = state_resolver.resolve_type(
+                    val.typ.clone(),
+                    StoragePosition {
+                        slot,
+                        index_in_slot: index,
+                    },
+                );
+
+                println!("value {:?}", value);
+                let mut rng = rand::thread_rng();
+
+                let var = match value {
+                    serde_json::Value::Object(obj) => {
+                        // Create a deterministic ID based on the variable's properties
+                        let id = {
+                            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                            hasher.write(val.name.as_bytes());
+                            hasher.write_u64(self.indx as u64); // Include the current step index
+                            (hasher.finish() % 1_000_000) as i64
+                            // Using big i64 values creates some issues
+                        };
+
+                        println!("storing nested object {:?}", id);
+
+                        // Store the nested object in the cache
+                        let mut cache = self.variable_cache.lock().unwrap();
+                        cache.insert(id, obj.clone());
+                        drop(cache);
+
+                        // Calculate the number of named variables for VS Code
+                        let named_variables = Some(obj.len() as i64);
+
+                        dap::types::Variable {
+                            name: val.name.clone(),
+                            value: "".to_string(),
+                            variables_reference: id,
+                            named_variables,
+                            ..Default::default()
+                        }
+                    }
+                    _ => dap::types::Variable {
+                        name: val.name.clone(),
+                        value: value.to_string(),
+                        ..Default::default()
+                    },
+                };
+
+                VariablesResponse {
+                    variables: vec![var],
+                }
+            }
+            Location::Memory | Location::Stack => {
+                println!("memory or slack variable {:?}", id);
+
+                let stack_location = match self.trace.stack_positions.get(&id_u64) {
+                    Some(stack_location) => stack_location,
+                    None => {
+                        panic!("stack location not found");
+                    }
+                };
+
+                println!("stack location {:?}", stack_location);
+                println!("stack: {:?}", step.stack);
+
+                let offset = step.stack.get(*stack_location + 1).unwrap();
+
+                match val.state_location {
+                    Location::Memory => {
+                        println!("memory: {:?}", step.memory);
+
+                        let offset =
+                            U256::from_be_bytes(<[u8; 32]>::try_from(offset.as_ref()).unwrap());
+                        let offset_bytes = offset.as_limbs()[0] as usize;
+
+                        let value = resolve_memory_assignment(
+                            val.typ.clone(),
+                            offset_bytes,
+                            step.memory.clone(),
+                        );
+
+                        println!("Memory: {:?}", value);
+
+                        let var = dap::types::Variable {
+                            name: val.name.clone(),
+                            value: value.to_string(),
+                            ..Default::default()
+                        };
+
+                        VariablesResponse {
+                            variables: vec![var],
+                        }
+                    }
+                    Location::Stack => {
+                        let value_bytes = offset.as_ref();
+                        let typ_size = val.typ.get_bytes();
+
+                        // fixed bytes pads to the left and the other elements pads to the right
+                        let value_bytes = match val.typ {
+                            Type::FixedBytes(_) => value_bytes[0..typ_size as usize].to_vec(),
+                            _ => value_bytes[32 - typ_size as usize..].to_vec(),
+                        };
+
+                        println!("Type: {:?}", val.typ);
+                        let value = val.typ.decode_bytes(&value_bytes).unwrap();
+                        println!("Value: {:?}", value);
+
+                        println!("Stack: {:?}", value);
+
+                        let var = dap::types::Variable {
+                            name: val.name.clone(),
+                            value: value.to_string(),
+                            ..Default::default()
+                        };
+
+                        VariablesResponse {
+                            variables: vec![var],
+                        }
+                    }
+                    _ => !unreachable!(),
+                }
+            }
+        }
     }
 }
 
