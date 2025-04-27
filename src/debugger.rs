@@ -203,7 +203,7 @@ impl Service for DapDebugger {
         let resp_breakpoints = breakpoints
             .iter()
             .map(|bp| dap::types::Breakpoint {
-                line: Some(bp.line as i64),
+                line: Some(bp.line),
                 ..Default::default()
             })
             .collect();
@@ -330,11 +330,6 @@ impl Debugger {
 
     pub fn trace(&self) -> DebugTraceStep {
         self.trace.trace(self.indx)
-    }
-
-    pub fn get_variable(&self, id: u64) {
-        let step = &self.trace.steps[self.indx];
-        let val = self.trace.variables.get(&id).unwrap();
     }
 }
 

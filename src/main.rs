@@ -35,6 +35,7 @@ pub mod built_info {
 mod builder;
 mod dap;
 mod debugger;
+#[cfg(test)]
 mod state;
 mod tracer;
 
@@ -318,6 +319,7 @@ impl LanguageServer for Backend {
         if let Some(cache) = files.caches.get(&path) {
             let file_path = uri.path();
 
+            #[allow(clippy::unnecessary_filter_map)]
             let functions: Vec<_> = cache
                 .top_level_code_objects
                 .iter()
@@ -331,7 +333,7 @@ impl LanguageServer for Backend {
                         .unwrap_or(false)
                 })
                 .filter_map(|(name, def_type)| {
-                    let range = declarations.get(&def_type.as_ref().unwrap());
+                    let range = declarations.get(def_type.as_ref().unwrap());
                     Some((name, range))
                 })
                 .collect();
@@ -344,9 +346,9 @@ impl LanguageServer for Backend {
 
                     vec![
                         CodeLens {
-                            range: range.clone(),
+                            range: *range,
                             command: Some(Command {
-                                title: format!("run test").to_string(),
+                                title: "run test".to_string(),
                                 command: "sol.test.file".to_string(),
                                 arguments: Some(vec![
                                     Value::String(file_path.to_string()),
@@ -356,9 +358,9 @@ impl LanguageServer for Backend {
                             data: None,
                         },
                         CodeLens {
-                            range: range.clone(),
+                            range: *range,
                             command: Some(Command {
-                                title: format!("debug test").to_string(),
+                                title: "debug test".to_string(),
                                 command: "sol.debug.file".to_string(),
                                 arguments: Some(vec![
                                     Value::String(file_path.to_string()),
