@@ -27,7 +27,7 @@ struct DebuggerContext {
 
 #[derive(Deserialize)]
 pub struct DebugNode {
-    pub _kind: String,
+    // pub kind: String,
     pub steps: Vec<CallTraceStep>,
 }
 
