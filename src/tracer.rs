@@ -566,8 +566,7 @@ impl StatementVisitor {
         source_map
             .iter()
             .enumerate()
-            .filter(|(_, elem)| elem.offset() == start && elem.length() == length)
-            .next()
+            .find(|(_, elem)| elem.offset() == start && elem.length() == length)
             .and_then(|(idx, _)| pc_ic_map.get(idx))
     }
 
@@ -646,7 +645,7 @@ fn make_map<const PC_FIRST: bool>(code: &[u8]) -> HashMap<usize, usize> {
 
         // Check if current byte is a PUSH operation (0x60-0x7f)
         let current_byte = code[pc];
-        if current_byte >= 0x60 && current_byte <= 0x7f {
+        if (0x60..=0x7f).contains(&current_byte) {
             // Calculate push size: for PUSH1 (0x60) it's 1, for PUSH32 (0x7f) it's 32
             let push_size = (current_byte - 0x60 + 1) as usize;
             pc += push_size;
@@ -675,11 +674,8 @@ impl DebugUnit {
 
                     // Check instructions in current block
                     for inst in &block.instructions {
-                        match inst.kind {
-                            InstructionKind::VariableDeclaration(id) => {
-                                vars_in_scope.push(id);
-                            }
-                            _ => {}
+                        if let InstructionKind::VariableDeclaration(id) = inst.kind {
+                            vars_in_scope.push(id);
                         };
 
                         if inst.pc == pc {
@@ -916,13 +912,14 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
 
                             // pop the last call trace and make sure the function is the same
                             let last_call = call_trace.pop();
-                            if last_call.is_some() && last_call.unwrap().0.name.clone() != func.name
-                            {
-                                return Err(TraceError::FunctionWithIncorrectExitPc(
-                                    func.name.clone(),
-                                    func.exit_pc,
-                                    last_call.unwrap().0.name.clone(),
-                                ));
+                            if let Some(last_call) = last_call {
+                                if last_call.0.name.clone() != func.name {
+                                    return Err(TraceError::FunctionWithIncorrectExitPc(
+                                        func.name.clone(),
+                                        func.exit_pc,
+                                        last_call.0.name.clone(),
+                                    ));
+                                }
                             }
                         }
                     }

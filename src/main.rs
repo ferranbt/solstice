@@ -319,6 +319,7 @@ impl LanguageServer for Backend {
         if let Some(cache) = files.caches.get(&path) {
             let file_path = uri.path();
 
+            #[allow(clippy::unnecessary_filter_map)]
             let functions: Vec<_> = cache
                 .top_level_code_objects
                 .iter()
