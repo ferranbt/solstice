@@ -1105,13 +1105,10 @@ pub fn execute_command(
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "Forge command failed: {} {} {}",
-                workspace_path, stdout, stderr
-            ),
-        ))
+        Err(std::io::Error::other(format!(
+            "Forge command failed: {} {} {}",
+            workspace_path, stdout, stderr
+        )))
     }
 }
 
