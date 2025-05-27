@@ -323,7 +323,7 @@ impl StatementVisitor {
             name,
             entry_pc: self.get_entry_pc_for_function(node).unwrap(),
             root_block,
-            _parameters: parameters,
+            parameters,
             exit_pc,
         };
 
@@ -597,15 +597,31 @@ impl StatementVisitor {
         Ok(None)
     }
 
-    fn build_debug_parameters(&self, node: &Node) -> eyre::Result<Vec<Variable>> {
+    fn build_debug_parameters(&mut self, node: &Node) -> eyre::Result<Vec<Variable>> {
         let mut parameters = Vec::new();
-        if let Some(params) = node.attribute::<Vec<Node>>("parameters") {
-            for param in params {
-                if let Some(var) = self.build_debug_variable(&param)? {
-                    parameters.push(var);
-                }
+
+        let parameters_list = node.attribute::<Node>("parameters").unwrap();
+        if parameters_list.node_type != NodeType::ParameterList {
+            panic!("bad")
+        }
+
+        let params = parameters_list
+            .attribute::<Vec<Node>>("parameters")
+            .unwrap();
+
+        for param in params {
+            if param.node_type != NodeType::VariableDeclaration {
+                panic!("bad")
+            }
+            if let Some(var) = self.build_debug_variable(&param)? {
+                let mut var = var.clone();
+                var.state_variable = false;
+
+                self.debug_unit.variables.push(var.clone());
+                parameters.push(var);
             }
         }
+
         Ok(parameters)
     }
 }
@@ -701,12 +717,18 @@ impl DebugUnit {
                 }
 
                 // Initialize vars_in_scope with state variable IDs
-                let vars_in_scope = self
+                let mut vars_in_scope: Vec<usize> = self
                     .variables
                     .iter()
                     .filter(|v| v.state_variable)
                     .map(|v| v.id as usize)
                     .collect();
+
+                // add variables from the function parameters
+                for func in function.parameters.iter() {
+                    vars_in_scope.push(func.id as usize);
+                }
+
                 let result = search_block(&function.root_block, pc, vars_in_scope);
                 if result.0.is_some() {
                     Some(result)
@@ -996,7 +1018,7 @@ pub struct Function {
     pub entry_pc: usize,
     pub exit_pc: usize,
     pub root_block: Block,
-    pub _parameters: Vec<Variable>,
+    pub parameters: Vec<Variable>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1154,7 +1176,13 @@ mod tests {
             // Write functions
             for function in sorted_functions {
                 write!(f, "  (function {}\n", function.name)?;
-                write!(f, "    (params )\n")?;
+                let param_names = function
+                    .parameters
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                write!(f, "    (params {})\n", param_names)?;
                 self.fmt_block(f, &function.root_block, 2)?;
                 write!(f, "  )\n")?;
             }
@@ -1232,7 +1260,7 @@ mod tests {
                         let vars_in_scope: Vec<String> = step
                             .variables_in_scope
                             .iter()
-                            .filter_map(|&id| self.variables.get(&(id as u64)))
+                            .map(|&id| self.variables.get(&(id as u64)).unwrap())
                             .map(|var| var.name.clone())
                             .collect();
 

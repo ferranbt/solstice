@@ -6,19 +6,19 @@
     (params )
     (block
       (block
-        (stmt 171:13)
-        (stmt 171:13)
+        (stmt 171:14)
+        (stmt 171:14)
       )
       (block
-        (stmt 307:22)
-        (stmt 307:22)
+        (stmt 309:23)
+        (stmt 309:23)
       )
     )
   )
   (function simple_call
-    (params )
+    (params val)
     (block
-      (stmt 415:8)
+      (stmt 429:14)
     )
   )
 )
