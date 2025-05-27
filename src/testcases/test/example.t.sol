@@ -9,21 +9,10 @@ contract FooTest is Test {
 
     function test_main() external {
         Example example = new Example();
-        value += simple_call();
-        
-        /*
-        if (value == 0) {
-            value = simple_call();
-        } else {
-            value = value + simple_call();
-        }
-        for (uint256 i = 0; i < 2; i++) {
-            value += simple_call();
-        }
-        */
+        value += simple_call(1);
     }
 
-    function simple_call() public pure returns (uint256) {
-        return 1;
+    function simple_call(uint256 val) public pure returns (uint256) {
+        return val + 1;
     }
 }

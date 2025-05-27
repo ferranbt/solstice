@@ -4,6 +4,6 @@
   [STMT] 8:8 scope=[value]
 [STMT] 11:8 scope=[value, example]
 [CALL] 12:8
-[FUNC] simple_call (test/example.t.sol:26)
-  [STMT] 27:8 scope=[value]
+[FUNC] simple_call (test/example.t.sol:15)
+  [STMT] 16:8 scope=[value, val]
 [STMT] 12:8 scope=[value, example]
