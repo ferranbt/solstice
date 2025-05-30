@@ -1807,8 +1807,10 @@ mod tests {
         }
 
         fn retrieve_memory(&self) -> JsonValue {
-            let variables =
-                extract_non_state_variables(&self.contract.ast, self.contract.compact_bytecode());
+            let variables = extract_non_state_variables(
+                &self.contract.ast,
+                self.contract.compact_bytecode_deployed(),
+            );
 
             let mut assignments = Vec::new();
 
