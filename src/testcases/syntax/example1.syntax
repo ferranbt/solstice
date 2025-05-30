@@ -2,23 +2,29 @@
   (state-vars
     value
   )
+  (function
+    (params val)
+    (block
+      (stmt 143:11)
+    )
+  )
   (function main
     (params )
     (block
       (block
-        (stmt 171:14)
-        (stmt 171:14)
+        (stmt 230:14)
+        (stmt 230:14)
       )
       (block
-        (stmt 309:23)
-        (stmt 309:23)
+        (stmt 368:23)
+        (stmt 368:23)
       )
     )
   )
   (function simple_call
     (params val)
     (block
-      (stmt 429:14)
+      (stmt 488:14)
     )
   )
 )

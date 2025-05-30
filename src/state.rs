@@ -1615,7 +1615,7 @@ pub struct CompilerOutput {
     pub bin: Bytes,
 
     #[serde(rename = "srcmap")]
-    pub _srcmap: String,
+    pub srcmap: String,
 
     /// The runtime bytecode
     #[serde(rename = "bin-runtime")]
@@ -1628,15 +1628,15 @@ pub struct CompilerOutput {
 }
 
 impl CompilerOutput {
-    pub fn compact_deployed_bytecode(&self) -> CompactBytecode {
+    pub fn compact_bytecode(&self) -> CompactBytecode {
         CompactBytecode {
             object: BytecodeObject::Bytecode(self.bin.clone()),
-            source_map: Some(self.srcmap_runtime.clone()),
+            source_map: Some(self.srcmap.clone()),
             link_references: Default::default(),
         }
     }
 
-    pub fn compact_bytecode(&self) -> CompactBytecode {
+    pub fn compact_bytecode_deployed(&self) -> CompactBytecode {
         CompactBytecode {
             object: BytecodeObject::Bytecode(self.bin_runtime.clone()),
             source_map: Some(self.srcmap_runtime.clone()),
@@ -1727,7 +1727,7 @@ pub fn compile_contract(source: &str) -> eyre::Result<CompilerOutput> {
             bin: contract.bin.clone(),
             bin_runtime: contract.bin_runtime.clone(),
             srcmap_runtime: contract.srcmap_runtime.clone(),
-            _srcmap: contract.srcmap.clone(),
+            srcmap: contract.srcmap.clone(),
             ast: source.ast.clone(),
         };
         Ok(output)
@@ -1807,8 +1807,10 @@ mod tests {
         }
 
         fn retrieve_memory(&self) -> JsonValue {
-            let variables =
-                extract_non_state_variables(&self.contract.ast, self.contract.compact_bytecode());
+            let variables = extract_non_state_variables(
+                &self.contract.ast,
+                self.contract.compact_bytecode_deployed(),
+            );
 
             let mut assignments = Vec::new();
 

@@ -204,11 +204,11 @@ impl StatementVisitor {
         source: String,
     ) -> Self {
         Self {
-            source_map: parse(&deployed_bytecode.clone().source_map.unwrap()).unwrap(),
-            pc_ic_map: IcPcMap::new(deployed_bytecode.bytes().unwrap()),
+            source_map: parse(&bytecode.clone().source_map.unwrap()).unwrap(),
+            pc_ic_map: IcPcMap::new(bytecode.bytes().unwrap()),
             source: source.clone(),
-            deployed_source_map: parse(&bytecode.clone().source_map.unwrap()).unwrap(),
-            deployed_pc_ic_map: IcPcMap::new(bytecode.bytes().unwrap()),
+            deployed_source_map: parse(&deployed_bytecode.clone().source_map.unwrap()).unwrap(),
+            deployed_pc_ic_map: IcPcMap::new(deployed_bytecode.bytes().unwrap()),
             in_constructor: false,
             contract_node: None,
             debug_unit: DebugUnit {
@@ -300,11 +300,7 @@ impl StatementVisitor {
     }
 
     fn find_exit_pc(&self, node: &Node) -> StatementVisitorResult<Option<usize>> {
-        let (pc_ic_map, source_map) = if self.in_constructor {
-            (&self.deployed_pc_ic_map, &self.deployed_source_map)
-        } else {
-            (&self.pc_ic_map, &self.source_map)
-        };
+        let (pc_ic_map, source_map) = self.get_source_map();
 
         // Find source elements within function's range that have Jump::Out
         let start = node.src.start as u32;
@@ -370,11 +366,7 @@ impl StatementVisitor {
     }
 
     fn get_entry_pc_for_function(&self, node: &Node) -> Option<usize> {
-        let (pc_ic_map, source_map) = if self.in_constructor {
-            (&self.deployed_pc_ic_map, &self.deployed_source_map)
-        } else {
-            (&self.pc_ic_map, &self.source_map)
-        };
+        let (pc_ic_map, source_map) = self.get_source_map();
 
         let start = node.src.start as u32;
         let length = node.src.length? as u32;
@@ -574,11 +566,7 @@ impl StatementVisitor {
     }
 
     fn get_pc_for_node(&self, node: &Node) -> Option<usize> {
-        let (pc_ic_map, source_map) = if self.in_constructor {
-            (&self.deployed_pc_ic_map, &self.deployed_source_map)
-        } else {
-            (&self.pc_ic_map, &self.source_map)
-        };
+        let (pc_ic_map, source_map) = self.get_source_map();
 
         let start = node.src.start as u32;
         let length = node.src.length? as u32;
@@ -592,11 +580,7 @@ impl StatementVisitor {
     }
 
     fn get_first_pc_for_node(&self, node: &Node) -> Option<usize> {
-        let (pc_ic_map, source_map) = if self.in_constructor {
-            (&self.deployed_pc_ic_map, &self.deployed_source_map)
-        } else {
-            (&self.pc_ic_map, &self.source_map)
-        };
+        let (pc_ic_map, source_map) = self.get_source_map();
 
         let start = node.src.start as u32;
         let length = node.src.length? as u32;
@@ -677,6 +661,16 @@ impl StatementVisitor {
         }
 
         Ok(parameters)
+    }
+
+    fn get_source_map(&self) -> (&IcPcMap, &SourceMap) {
+        let (pc_ic_map, source_map) = if self.in_constructor {
+            (&self.pc_ic_map, &self.source_map)
+        } else {
+            (&self.deployed_pc_ic_map, &self.deployed_source_map)
+        };
+
+        (pc_ic_map, source_map)
     }
 }
 
@@ -1349,7 +1343,7 @@ mod tests {
                 let contract = fs::read_to_string(&path).unwrap();
                 let artifact = compile_contract(&contract).unwrap();
 
-                let deployed_bytecode = artifact.compact_deployed_bytecode();
+                let deployed_bytecode = artifact.compact_bytecode_deployed();
                 let bytecode = artifact.compact_bytecode();
 
                 let contract_ast = artifact.ast.nodes.last().unwrap();

@@ -4,6 +4,10 @@ pragma solidity ^0.8.28;
 contract Example {
     uint256 value;
 
+    constructor(uint256 val) {
+        value = val;
+    }
+
     function main() public {
         if (value == 1) {
             simple_call(1);
