@@ -163,6 +163,32 @@ struct StatementVisitor {
     pub contract_node: Option<Node>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum StatementVisitorError {
+    ParseError,
+    IncorrectType(NodeType, NodeType),
+}
+
+impl Display for StatementVisitorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StatementVisitorError")
+    }
+}
+
+impl std::error::Error for StatementVisitorError {}
+
+trait OptionExt<T> {
+    fn ok_or_missing_attribute(self, attribute_name: &str) -> StatementVisitorResult<T>;
+}
+
+impl<T> OptionExt<T> for Option<T> {
+    fn ok_or_missing_attribute(self, _attribute_name: &str) -> StatementVisitorResult<T> {
+        self.ok_or(StatementVisitorError::ParseError)
+    }
+}
+
+pub type StatementVisitorResult<T> = Result<T, StatementVisitorError>;
+
 impl StatementVisitor {
     pub fn new(
         deployed_bytecode: CompactBytecode,
@@ -187,7 +213,7 @@ impl StatementVisitor {
         }
     }
 
-    pub fn visit_contract(&mut self, node: &Node) -> eyre::Result<()> {
+    pub fn visit_contract(&mut self, node: &Node) -> StatementVisitorResult<()> {
         self.contract_node = Some(node.clone());
 
         for node in &node.nodes {
@@ -199,8 +225,9 @@ impl StatementVisitor {
                         .insert(function.name.clone(), function);
                 }
                 NodeType::VariableDeclaration => {
-                    let state_variable =
-                        node.attribute::<bool>("stateVariable").unwrap_or_default();
+                    let state_variable = node
+                        .attribute::<bool>("stateVariable")
+                        .ok_or_missing_attribute("stateVariable")?;
 
                     if state_variable {
                         let var = self.build_debug_variable(node)?;
@@ -217,7 +244,7 @@ impl StatementVisitor {
         Ok(())
     }
 
-    fn source_location2_for(&self, loc: &ast::LowFidelitySourceLocation) -> SourceLocation {
+    fn source_location_for(&self, loc: &ast::LowFidelitySourceLocation) -> SourceLocation {
         // Get the substring up to the start position to count lines
         let source_until_start = &self.source[..loc.start];
         let lines_until_start: Vec<&str> = source_until_start.lines().collect();
@@ -265,7 +292,7 @@ impl StatementVisitor {
         }
     }
 
-    fn find_exit_pc(&self, node: &Node) -> eyre::Result<Option<usize>> {
+    fn find_exit_pc(&self, node: &Node) -> StatementVisitorResult<Option<usize>> {
         let (pc_ic_map, source_map) = if self.in_constructor {
             (&self.deployed_pc_ic_map, &self.deployed_source_map)
         } else {
@@ -274,7 +301,7 @@ impl StatementVisitor {
 
         // Find source elements within function's range that have Jump::Out
         let start = node.src.start as u32;
-        let length = node.src.length.unwrap_or(0) as u32;
+        let length = node.src.length.map_or(0, |l| l as u32);
 
         let matches = source_map
             .iter()
@@ -297,11 +324,15 @@ impl StatementVisitor {
         }
     }
 
-    fn build_debug_function(&mut self, node: &Node) -> eyre::Result<Function> {
-        let is_constructor = node.attribute::<String>("kind").unwrap() == "constructor";
+    fn build_debug_function(&mut self, node: &Node) -> StatementVisitorResult<Function> {
+        let kind = node
+            .attribute::<String>("kind")
+            .ok_or_missing_attribute("kind")?;
+
+        let is_constructor = kind == "constructor";
         self.in_constructor = is_constructor;
 
-        let name = node.attribute("name").unwrap();
+        let name = node.attribute("name").ok_or_missing_attribute("name")?;
         let parameters = self.build_debug_parameters(node)?;
 
         let root_block = if let Some(body) = &node.body {
@@ -312,11 +343,11 @@ impl StatementVisitor {
 
         let exit_pc = if is_constructor {
             // the constructor does not have an ouput but we can use the refercence to the contract node for this
-            self.find_exit_pc(self.contract_node.as_ref().unwrap())
-                .unwrap()
-                .unwrap()
+            self.find_exit_pc(self.contract_node.as_ref().unwrap())?
+                .expect("constructor should have an exit pc")
         } else {
-            self.find_exit_pc(node).unwrap().unwrap()
+            self.find_exit_pc(node)?
+                .expect("function should have an exit pc")
         };
 
         let function = Function {
@@ -366,13 +397,13 @@ impl StatementVisitor {
         matches.first().and_then(|(idx, _)| pc_ic_map.get(*idx))
     }
 
-    fn build_debug_block(&mut self, node: &Node) -> eyre::Result<Block> {
+    fn build_debug_block(&mut self, node: &Node) -> StatementVisitorResult<Block> {
         let mut block = Block {
             variables: Vec::new(),
             condition: None,
             instructions: Vec::new(),
             scopes: Vec::new(),
-            location: self.source_location2_for(&node.src),
+            location: self.source_location_for(&node.src),
         };
 
         let statements: Vec<Node> = node.attribute("statements").unwrap_or_default();
@@ -381,7 +412,7 @@ impl StatementVisitor {
                 NodeType::ExpressionStatement => {
                     // Add regular statement instruction
                     if let Some(pc) = self.get_pc_for_node(statement) {
-                        let block_location = self.source_location2_for(&statement.src);
+                        let block_location = self.source_location_for(&statement.src);
 
                         block.instructions.push(Instruction {
                             pc,
@@ -408,7 +439,7 @@ impl StatementVisitor {
                             if let Some(pc) = self.get_pc_for_node(&condition) {
                                 if_block.condition = Some(Instruction {
                                     pc,
-                                    location: self.source_location2_for(&condition.src),
+                                    location: self.source_location_for(&condition.src),
                                     kind: InstructionKind::Statement,
                                 });
                             }
@@ -425,7 +456,7 @@ impl StatementVisitor {
                             if let Some(pc) = self.get_pc_for_node(&condition) {
                                 for_block.condition = Some(Instruction {
                                     pc,
-                                    location: self.source_location2_for(&condition.src),
+                                    location: self.source_location_for(&condition.src),
                                     kind: InstructionKind::Statement,
                                 });
                             }
@@ -434,11 +465,11 @@ impl StatementVisitor {
                     }
                 }
                 NodeType::VariableDeclarationStatement => {
-                    let var = self.build_debug_variable(statement).unwrap().unwrap();
+                    let var = self.build_debug_variable(statement)?.expect("variable");
                     self.debug_unit.variables.push(var.clone());
                     block.variables.push(var.id as usize);
 
-                    let block_location = self.source_location2_for(&statement.src);
+                    let block_location = self.source_location_for(&statement.src);
 
                     if let Some(pc) = self.get_pc_for_node(statement) {
                         block.instructions.push(Instruction {
@@ -462,7 +493,7 @@ impl StatementVisitor {
                     if let Some(pc) = self.get_pc_for_node(statement) {
                         block.instructions.push(Instruction {
                             pc,
-                            location: self.source_location2_for(&statement.src),
+                            location: self.source_location_for(&statement.src),
                             kind: InstructionKind::Statement,
                         });
                     }
@@ -478,7 +509,7 @@ impl StatementVisitor {
         node: &Node,
         block: &mut Block,
         block_location: &SourceLocation,
-    ) -> eyre::Result<()> {
+    ) -> StatementVisitorResult<()> {
         match node.node_type {
             NodeType::FunctionCall => {
                 // Skip internal functions (those with negative referencedDeclaration)
@@ -570,49 +601,65 @@ impl StatementVisitor {
             .and_then(|(idx, _)| pc_ic_map.get(idx))
     }
 
-    fn build_debug_variable(&self, node: &Node) -> eyre::Result<Option<Variable>> {
+    fn build_debug_variable(&self, node: &Node) -> StatementVisitorResult<Option<Variable>> {
         if let Some(name) = node.attribute("name") {
             // this is most likely a state variable
             if let Some(id) = node.id {
                 return Ok(Some(Variable {
                     name,
                     id: id as u64,
-                    location: self.source_location2_for(&node.src),
+                    location: self.source_location_for(&node.src),
                     state_variable: true,
                 }));
             }
         } else {
             // check now for a normal varaible decalration
-            let declarations = node.attribute::<Vec<Node>>("declarations").unwrap();
+            let declarations = node
+                .attribute::<Vec<Node>>("declarations")
+                .ok_or_missing_attribute("declarations")?;
+
             let declaration = declarations.first().unwrap();
-            let name = declaration.attribute::<String>("name").unwrap();
+
+            let name = declaration
+                .attribute::<String>("name")
+                .ok_or_missing_attribute("name")?;
 
             return Ok(Some(Variable {
                 name,
                 id: node.id.unwrap() as u64,
-                location: self.source_location2_for(&node.src),
+                location: self.source_location_for(&node.src),
                 state_variable: false,
             }));
         }
         Ok(None)
     }
 
-    fn build_debug_parameters(&mut self, node: &Node) -> eyre::Result<Vec<Variable>> {
+    fn build_debug_parameters(&mut self, node: &Node) -> StatementVisitorResult<Vec<Variable>> {
         let mut parameters = Vec::new();
 
-        let parameters_list = node.attribute::<Node>("parameters").unwrap();
+        let parameters_list = node
+            .attribute::<Node>("parameters")
+            .ok_or_missing_attribute("parameters")?;
+
         if parameters_list.node_type != NodeType::ParameterList {
-            panic!("bad")
+            return Err(StatementVisitorError::IncorrectType(
+                NodeType::ParameterList,
+                parameters_list.node_type,
+            ));
         }
 
         let params = parameters_list
             .attribute::<Vec<Node>>("parameters")
-            .unwrap();
+            .ok_or_missing_attribute("parameters")?;
 
         for param in params {
             if param.node_type != NodeType::VariableDeclaration {
-                panic!("bad")
+                return Err(StatementVisitorError::IncorrectType(
+                    NodeType::VariableDeclaration,
+                    param.node_type,
+                ));
             }
+
             if let Some(var) = self.build_debug_variable(&param)? {
                 let mut var = var.clone();
                 var.state_variable = false;
