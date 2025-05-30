@@ -171,7 +171,14 @@ enum StatementVisitorError {
 
 impl Display for StatementVisitorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "StatementVisitorError")
+        match self {
+            StatementVisitorError::ParseError => write!(f, "ParseError"),
+            StatementVisitorError::IncorrectType(expected, actual) => write!(
+                f,
+                "IncorrectType: expected {:?}, got {:?}",
+                expected, actual
+            ),
+        }
     }
 }
 
@@ -187,7 +194,7 @@ impl<T> OptionExt<T> for Option<T> {
     }
 }
 
-pub type StatementVisitorResult<T> = Result<T, StatementVisitorError>;
+type StatementVisitorResult<T> = Result<T, StatementVisitorError>;
 
 impl StatementVisitor {
     pub fn new(
