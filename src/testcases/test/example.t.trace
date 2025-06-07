@@ -1,4 +1,5 @@
 [FUNC] test_main (test/example.t.sol:10)
+[STMT] 20:8 scope=[value]
 [CALL] 11:8
 [FUNC]  (src/example1.sol:7)
   [STMT] 8:8 scope=[value]
@@ -7,3 +8,4 @@
 [FUNC] simple_call (test/example.t.sol:15)
   [STMT] 16:8 scope=[value, val]
 [STMT] 12:8 scope=[value, example]
+[STMT] 22:8 scope=[value]

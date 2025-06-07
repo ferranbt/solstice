@@ -165,7 +165,9 @@ struct StatementVisitor {
 
 #[derive(Debug, Clone, PartialEq)]
 enum StatementVisitorError {
+    #[allow(dead_code)]
     ParseError,
+    MissingAttribute(String),
     IncorrectType(NodeType, NodeType),
 }
 
@@ -173,6 +175,9 @@ impl Display for StatementVisitorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StatementVisitorError::ParseError => write!(f, "ParseError"),
+            StatementVisitorError::MissingAttribute(attribute_name) => {
+                write!(f, "MissingAttribute: {}", attribute_name)
+            }
             StatementVisitorError::IncorrectType(expected, actual) => write!(
                 f,
                 "IncorrectType: expected {:?}, got {:?}",
@@ -189,8 +194,10 @@ trait OptionExt<T> {
 }
 
 impl<T> OptionExt<T> for Option<T> {
-    fn ok_or_missing_attribute(self, _attribute_name: &str) -> StatementVisitorResult<T> {
-        self.ok_or(StatementVisitorError::ParseError)
+    fn ok_or_missing_attribute(self, attribute_name: &str) -> StatementVisitorResult<T> {
+        self.ok_or(StatementVisitorError::MissingAttribute(
+            attribute_name.to_string(),
+        ))
     }
 }
 
@@ -226,7 +233,17 @@ impl StatementVisitor {
         for node in &node.nodes {
             match node.node_type {
                 NodeType::FunctionDefinition => {
-                    let function = self.build_debug_function(node)?;
+                    let kind = node
+                        .attribute::<String>("kind")
+                        .ok_or_missing_attribute("kind")?;
+
+                    let function_kind = if kind == "constructor" {
+                        FunctionKind::Constructor
+                    } else {
+                        FunctionKind::Function
+                    };
+
+                    let function = self.build_debug_function(node, function_kind)?;
                     self.debug_unit
                         .functions
                         .insert(function.name.clone(), function);
@@ -243,6 +260,24 @@ impl StatementVisitor {
                 }
                 NodeType::StructDefinition => {}
                 NodeType::EventDefinition => {}
+                NodeType::ModifierDefinition => {
+                    let root_block = if let Some(body) = &node.body {
+                        self.build_debug_block(body)?
+                    } else {
+                        Block::default()
+                    };
+
+                    let func = Function {
+                        name: node.attribute("name").ok_or_missing_attribute("name")?,
+                        kind: FunctionKind::Modifier,
+                        entry_pc: 0,
+                        root_block,
+                        parameters: Vec::new(),
+                        exit_pc: 0,
+                    };
+
+                    self.debug_unit.functions.insert(func.name.clone(), func);
+                }
                 _ => {
                     panic!("Not handled {:?}", node.node_type);
                 }
@@ -327,12 +362,12 @@ impl StatementVisitor {
         }
     }
 
-    fn build_debug_function(&mut self, node: &Node) -> StatementVisitorResult<Function> {
-        let kind = node
-            .attribute::<String>("kind")
-            .ok_or_missing_attribute("kind")?;
-
-        let is_constructor = kind == "constructor";
+    fn build_debug_function(
+        &mut self,
+        node: &Node,
+        kind: FunctionKind,
+    ) -> StatementVisitorResult<Function> {
+        let is_constructor = matches!(kind, FunctionKind::Constructor);
         self.in_constructor = is_constructor;
 
         let name = node.attribute("name").ok_or_missing_attribute("name")?;
@@ -357,6 +392,7 @@ impl StatementVisitor {
             name,
             entry_pc: self.get_entry_pc_for_function(node).unwrap(),
             root_block,
+            kind,
             parameters,
             exit_pc,
         };
@@ -947,7 +983,10 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                 if let Some(debug_unit) = debug_units.get(contract_name) {
                     // for all the functions, find the entry pc
                     for func in debug_unit.functions.values() {
-                        if func.entry_pc == step.pc {
+                        if func.entry_pc == step.pc
+                            && (func.kind == FunctionKind::Function
+                                || func.kind == FunctionKind::Constructor)
+                        {
                             if !expecting_function {
                                 return Err(TraceError::FoundFunctionEntryWithoutCall);
                             }
@@ -975,7 +1014,10 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                     }
                     // same with exit pc
                     for func in debug_unit.functions.values() {
-                        if func.exit_pc == step.pc {
+                        if func.exit_pc == step.pc
+                            && (func.kind == FunctionKind::Function
+                                || func.kind == FunctionKind::Constructor)
+                        {
                             if expecting_function {
                                 return Err(TraceError::FoundFunctionExitWithoutCall);
                             }
@@ -1060,9 +1102,17 @@ pub struct DebugUnit {
     pub variables: Vec<Variable>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum FunctionKind {
+    Constructor,
+    Function,
+    Modifier,
+}
+
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
+    pub kind: FunctionKind,
     pub entry_pc: usize,
     pub exit_pc: usize,
     pub root_block: Block,
@@ -1432,6 +1482,9 @@ mod tests {
                 )?;
 
                 let expected = fs::read_to_string(expected_path).unwrap();
+
+                println!("{}", formatted);
+                println!("{}", expected);
 
                 assert_eq!(formatted, expected);
             }

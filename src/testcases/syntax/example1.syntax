@@ -21,10 +21,23 @@
       )
     )
   )
+  (function simpleModifier
+    (params )
+    (block
+      (stmt 551:50)
+      (stmt 622:17)
+    )
+  )
   (function simple_call
     (params val)
     (block
       (stmt 488:14)
+    )
+  )
+  (function simple_with_modifier
+    (params )
+    (block
+      (stmt 716:9)
     )
   )
 )
