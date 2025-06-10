@@ -1085,6 +1085,8 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                             return Err(TraceError::FoundInstructionWithoutFunctionEntry);
                         }
 
+                        println!("instruction {:?}", instruction);
+
                         if matches!(instruction.kind, InstructionKind::FunctionCall) {
                             expecting_function = true;
 

@@ -30,6 +30,7 @@ contract FooTest is Test {
 
     function test_contract_calls() external {
         Example example = new Example();
-        example.simple_call();
+        // example.simple_call();
+        example.set_parent_value(1);
     }
 }
