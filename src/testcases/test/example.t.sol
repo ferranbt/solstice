@@ -27,4 +27,9 @@ contract FooTest is Test {
             value += simple_call(1);
         } 
     }
+
+    function test_contract_calls() external {
+        Example example = new Example();
+        example.simple_call();
+    }
 }
