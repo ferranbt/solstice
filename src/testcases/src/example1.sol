@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
+contract Parent {
+    uint256 parent_value;
+
+    function set_parent_value(uint256 new_parent_value) public {
+        parent_value = new_parent_value;
+    } 
+}
+
 contract Example {
     uint256 value;
 
