@@ -1441,6 +1441,61 @@ mod tests {
         }
     }
 
+    struct TraceTestCase {
+        pub test_path: String,
+        pub expected_path: PathBuf,
+        pub test_case_function: String,
+    }
+
+    fn get_trace_test_cases(workspace_path: &str) -> Vec<TraceTestCase> {
+        let test_dir = Path::new(workspace_path).join("test");
+
+        // find all the foundry test cases, files that have as extension .sol
+        let test_cases = fs::read_dir(test_dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap().path();
+                if path.is_file() && path.extension().unwrap() == "sol" {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // For each of the test cases, find the traces.
+        // The trace files are in the same folder with the following format:
+        // <test_case_name>.t.sol.<func_name>.trace
+        // where <func_name> is the internal function in the test that they trace.
+        let mut trace_test_cases = Vec::new();
+
+        test_cases.iter().for_each(|test_path| {
+            let trace_files = fs::read_dir(test_path.parent().unwrap())
+                .unwrap()
+                .filter_map(|entry| {
+                    let path = entry.unwrap().path();
+                    if path.is_file() && path.extension().unwrap() == "trace" {
+                        let trace_name = path.to_string_lossy().to_string();
+                        let trace_name = trace_name.split('.').nth_back(1).unwrap();
+
+                        Some(TraceTestCase {
+                            test_path: test_path.to_string_lossy().to_string(),
+                            expected_path: path,
+                            test_case_function: trace_name.to_string(),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            trace_test_cases.push(trace_files);
+        });
+
+        let trace_test_cases: Vec<_> = trace_test_cases.into_iter().flatten().collect();
+        trace_test_cases
+    }
+
     #[test]
     fn test_debugger_traces() -> eyre::Result<()> {
         let timestamp = std::time::SystemTime::now()
@@ -1450,60 +1505,48 @@ mod tests {
         let workspace_path_string = std::env::var("CARGO_MANIFEST_DIR")
             .expect("CARGO_MANIFEST_DIR not set")
             + "/src/testcases";
-
         let workspace_path = workspace_path_string.as_str();
-        let test_dir = Path::new(workspace_path).join("test");
 
-        for entry in fs::read_dir(test_dir).unwrap() {
-            let path = entry.unwrap().path();
+        let test_traces = get_trace_test_cases(workspace_path);
+        for trace_test_case in test_traces {
+            // write the metadata information
+            let log_output_dir = format!("trace/{}", timestamp);
+            std::fs::create_dir_all(&log_output_dir)?;
 
-            if path.is_file() && path.extension().unwrap() == "sol" {
-                // the trace file is the name of the file with .trace extension
-                let expected_path = path.with_extension("trace");
+            let debug_trace_path = {
+                let path = std::path::absolute(format!("{}/forge_trace.json", log_output_dir))
+                    .expect("Failed to get absolute path");
+                path.to_string_lossy().into_owned()
+            };
 
-                // use as test path for the output command the relative path with respect to the workspace path
-                let test_path = path.strip_prefix(workspace_path).unwrap();
+            let forge = Forge::debug(
+                &trace_test_case.test_case_function,
+                &trace_test_case.test_path,
+                debug_trace_path.as_str(),
+            );
+            let _ = execute_command(workspace_path, forge).unwrap();
 
-                // write the metadata information
-                let log_output_dir = format!("trace/{}", timestamp);
-                std::fs::create_dir_all(&log_output_dir)?;
+            let debug_trace = generate_trace(workspace_path, debug_trace_path.as_str()).unwrap();
 
-                let debug_trace_path = {
-                    let path = std::path::absolute(format!("{}/forge_trace.json", log_output_dir))
-                        .expect("Failed to get absolute path");
-                    path.to_string_lossy().into_owned()
-                };
+            // save the debug trace
+            let debug_trace_json = serde_json::to_string(&debug_trace).unwrap();
+            std::fs::write(
+                format!("{}/debug_trace.json", log_output_dir),
+                debug_trace_json,
+            )?;
 
-                let forge = Forge::debug(
-                    "test_main",
-                    test_path.to_str().unwrap(),
-                    debug_trace_path.as_str(),
-                );
-                let _ = execute_command(workspace_path, forge).unwrap();
+            let formatted = debug_trace.to_debug_format(workspace_path);
+            std::fs::write(
+                format!("{}/debug_trace.txt", log_output_dir),
+                formatted.clone(),
+            )?;
 
-                let debug_trace =
-                    generate_trace(workspace_path, debug_trace_path.as_str()).unwrap();
+            let expected = fs::read_to_string(trace_test_case.expected_path).unwrap();
 
-                // save the debug trace
-                let debug_trace_json = serde_json::to_string(&debug_trace).unwrap();
-                std::fs::write(
-                    format!("{}/debug_trace.json", log_output_dir),
-                    debug_trace_json,
-                )?;
+            println!("{}", formatted);
+            println!("{}", expected);
 
-                let formatted = debug_trace.to_debug_format(workspace_path);
-                std::fs::write(
-                    format!("{}/debug_trace.txt", log_output_dir),
-                    formatted.clone(),
-                )?;
-
-                let expected = fs::read_to_string(expected_path).unwrap();
-
-                println!("{}", formatted);
-                println!("{}", expected);
-
-                assert_eq!(formatted, expected);
-            }
+            assert_eq!(formatted, expected);
         }
 
         Ok(())

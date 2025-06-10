@@ -21,4 +21,10 @@ contract FooTest is Test {
         _;
         value = value + 1;
     }
+
+    function test_multiple_calls() external {
+        for (uint256 i = 0; i < 3; i++) {
+            value += simple_call(1);
+        } 
+    }
 }
