@@ -60,7 +60,7 @@ fn generate_debug_units(
             let name = file_path.file_name().unwrap().to_str().unwrap();
             let name = name
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap_or("")
                 .strip_suffix(".json")
                 .unwrap_or("");
