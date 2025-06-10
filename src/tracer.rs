@@ -46,9 +46,30 @@ fn generate_debug_units(
 
     let mut debug_unit = HashMap::new();
 
-    for (_file_path, artifact) in artifacts {
+    for (file_path, artifact) in artifacts {
         if let Some(ast) = artifact.ast.clone() {
             let absolute_path = ast.absolute_path;
+
+            // Extract the compilation target contract name from the artifact path.
+            // Each JSON artifact represents one compilation target, but the AST includes
+            // all contracts/nodes from the source file plus imported dependencies.
+            // The filename tells us which specific contract was the compilation target.
+            // IMPORTANT: Bytecode is only available for the compilation target contract.
+            // Attempting to decode other ContractDefinitions with a visitor will fail.
+            // e.g., "Parent.json" = Parent is the target with bytecode, but AST contains Parent + Child + imports
+            let name = file_path.file_name().unwrap().to_str().unwrap();
+            let name = name
+                .split('/')
+                .last()
+                .unwrap_or("")
+                .strip_suffix(".json")
+                .unwrap_or("");
+
+            if let Some(contracts_involved) = contracts_involved {
+                if !contracts_involved.contains(name) {
+                    continue;
+                }
+            }
 
             ast.nodes.iter().for_each(|node| {
                 let node = node.clone();
@@ -60,12 +81,7 @@ fn generate_debug_units(
                     if node.node_type == NodeType::ContractDefinition {
                         let contract_name = node.attribute::<String>("name").unwrap();
 
-                        let analyze_contract = match contracts_involved {
-                            Some(contracts_involved) => contracts_involved.contains(&contract_name),
-                            None => true,
-                        };
-
-                        if analyze_contract {
+                        if contract_name == name {
                             let source =
                                 fs::read_to_string(root_path.join(absolute_path.clone())).unwrap();
 
