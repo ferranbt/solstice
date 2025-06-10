@@ -2,7 +2,7 @@
   (state-vars
     value
   )
-  (function
+  (function constructor
     (params val)
     (block
       (stmt 143:11)
