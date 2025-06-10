@@ -26,8 +26,24 @@ struct DebuggerContext {
 }
 
 #[derive(Deserialize)]
+pub enum DebugNodeKind {
+    #[serde(rename = "CALL")]
+    Call,
+    #[serde(rename = "CREATE")]
+    Create,
+    #[serde(rename = "STATICCALL")]
+    StaticCall,
+}
+
+impl DebugNodeKind {
+    fn is_create(&self) -> bool {
+        matches!(self, DebugNodeKind::Create)
+    }
+}
+
+#[derive(Deserialize)]
 pub struct DebugNode {
-    // pub kind: String,
+    pub kind: DebugNodeKind,
     pub steps: Vec<CallTraceStep>,
 }
 
@@ -386,7 +402,14 @@ impl StatementVisitor {
         let is_constructor = matches!(kind, FunctionKind::Constructor);
         self.in_constructor = is_constructor;
 
-        let name = node.attribute("name").ok_or_missing_attribute("name")?;
+        let name = match kind {
+            FunctionKind::Constructor => "constructor".to_string(),
+            FunctionKind::Function => node.attribute("name").ok_or_missing_attribute("name")?,
+            _ => {
+                unreachable!("unhandled function kind {:?}", kind);
+            }
+        };
+
         let parameters = self.build_debug_parameters(node)?;
 
         let root_block = if let Some(body) = &node.body {
@@ -1001,7 +1024,9 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                     for func in debug_unit.functions.values() {
                         if func.entry_pc == step.pc
                             && (func.kind == FunctionKind::Function
-                                || func.kind == FunctionKind::Constructor)
+                                // Constructor is only valid if the trace is for a create operation
+                                || (func.kind == FunctionKind::Constructor 
+                                    && node.kind.is_create()))
                         {
                             if !expecting_function {
                                 return Err(TraceError::FoundFunctionEntryWithoutCall);
@@ -1032,7 +1057,8 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                     for func in debug_unit.functions.values() {
                         if func.exit_pc == step.pc
                             && (func.kind == FunctionKind::Function
-                                || func.kind == FunctionKind::Constructor)
+                                || (func.kind == FunctionKind::Constructor
+                                    && node.kind.is_create()))
                         {
                             if expecting_function {
                                 return Err(TraceError::FoundFunctionExitWithoutCall);
@@ -1507,8 +1533,16 @@ mod tests {
             + "/src/testcases";
         let workspace_path = workspace_path_string.as_str();
 
+        let filter_trace = std::env::var("FILTER_TRACE").unwrap_or_default();
+
         let test_traces = get_trace_test_cases(workspace_path);
         for trace_test_case in test_traces {
+            // If the FILTER_TRACE env variable is set, only run the trace for the function
+            // specified there.
+            if !filter_trace.is_empty() && filter_trace != trace_test_case.test_case_function {
+                continue;
+            }
+
             // write the metadata information
             let log_output_dir = format!("trace/{}", timestamp);
             std::fs::create_dir_all(&log_output_dir)?;
