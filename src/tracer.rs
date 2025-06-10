@@ -1025,8 +1025,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                         if func.entry_pc == step.pc
                             && (func.kind == FunctionKind::Function
                                 // Constructor is only valid if the trace is for a create operation
-                                || (func.kind == FunctionKind::Constructor 
-                                    && node.kind.is_create()))
+                                || (func.kind == FunctionKind::Constructor && node.kind.is_create()))
                         {
                             if !expecting_function {
                                 return Err(TraceError::FoundFunctionEntryWithoutCall);
