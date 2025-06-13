@@ -276,7 +276,6 @@ impl StatementVisitor {
             contract_node: None,
             debug_unit: DebugUnit {
                 source_id: 0,
-                name: String::new(),
                 path: path.clone(),
                 functions: HashMap::new(),
                 variables: Vec::new(),
@@ -553,6 +552,7 @@ impl StatementVisitor {
         Ok(block)
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn process_expression_for_function_calls(
         &self,
         node: &Node,
@@ -709,6 +709,7 @@ impl PcIcMap {
 /// Maps from program counter to instruction counter.
 #[derive(Debug, Clone)]
 pub struct IcPcMap {
+    #[allow(dead_code)]
     pub inner: HashMap<usize, usize>,
 }
 
@@ -721,6 +722,7 @@ impl IcPcMap {
     }
 
     /// Returns the instruction counter for the given program counter.
+    #[allow(dead_code)]
     pub fn get(&self, pc: usize) -> Option<usize> {
         self.inner.get(&pc).copied()
     }
@@ -759,17 +761,6 @@ pub enum MatchResult {
     FunctionWithOut(Function),
     Instruction(Instruction),
     ConstructorOut,
-}
-
-impl MatchResult {
-    fn kind(&self) -> &str {
-        match self {
-            MatchResult::Function(_) => "function",
-            MatchResult::FunctionWithOut(_) => "function_out",
-            MatchResult::Instruction(_) => "instruction",
-            MatchResult::ConstructorOut => "constructor_out",
-        }
-    }
 }
 
 // Conversion from your existing structures
@@ -840,6 +831,8 @@ impl DebugUnit {
 pub enum StepKind {
     FunctionDefinition(String),
     FunctionCall,
+
+    #[allow(dead_code)]
     ConstructorOut,
 
     #[default]
@@ -925,12 +918,15 @@ pub enum TraceError {
     #[error("Found function entry without call")]
     FoundFunctionEntryWithoutCall,
 
+    #[allow(dead_code)]
     #[error("Found function exit without call")]
     FoundFunctionExitWithoutCall,
 
+    #[allow(dead_code)]
     #[error("Found instruction without function entry")]
     FoundInstructionWithoutFunctionEntry,
 
+    #[allow(dead_code)]
     #[error("Last step should have call trace equal to 0")]
     LastStepShouldHaveCallTraceEqualZero,
 
@@ -956,13 +952,6 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
 
     let context: DebuggerContext = serde_json::from_str(&content)
         .map_err(|e| TraceError::FailedToParseDebugDump(trace_path.to_string(), e))?;
-
-    let contracts_involved: HashSet<String> = context
-        .contracts
-        .identified_contracts
-        .values()
-        .cloned()
-        .collect();
 
     let root_path = Path::new(workspace_path);
     let debug_units = generate_debug_units(root_path, None).unwrap();
@@ -992,8 +981,8 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
         let debug_unit = debug_units.get(contract).unwrap();
 
         for step in node.steps.iter() {
-            let memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
-            let stack: Vec<Bytes> = step
+            let _memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
+            let _stack: Vec<Bytes> = step
                 .stack
                 .clone()
                 .unwrap()
@@ -1002,7 +991,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                 .collect();
 
             // the storage for the current state is before any key has been inserted
-            let storage = contracts_storage
+            let _storage = contracts_storage
                 .get(&step.contract)
                 .unwrap_or(&HashMap::new())
                 .clone();
@@ -1191,15 +1180,14 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
         }
     }
 
-    return Ok(DebugTrace {
+    Ok(DebugTrace {
         steps,
         variables: variable_definitions,
-    });
+    })
 }
 
 #[derive(Debug, Clone)]
 pub struct DebugUnit {
-    pub name: String,
     pub path: String,
     pub functions: HashMap<String, Function>,
     pub variables: Vec<Variable>,
@@ -1216,7 +1204,7 @@ pub enum FunctionKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct SourceLocationHelper {
+pub struct SourceLocationHelper {
     pub start: usize,
     pub length: usize,
 }
@@ -1230,6 +1218,7 @@ impl SourceLocationHelper {
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
+    #[allow(dead_code)]
     pub kind: FunctionKind,
     pub root_block: Block,
     pub parameters: Vec<Variable>,
