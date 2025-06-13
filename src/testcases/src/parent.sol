@@ -8,3 +8,11 @@ contract Parent {
         parent_value_2 = new_parent_value;
     } 
 }
+
+contract ParentWithConstructor {
+    uint256 parent_value_2;
+
+    constructor() {
+        parent_value_2 = 10;
+    }
+}
