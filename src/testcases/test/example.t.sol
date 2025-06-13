@@ -32,5 +32,6 @@ contract FooTest is Test {
         Example example = new Example();
         // example.simple_call();
         example.set_parent_value(1);
+        example.set_parent_value_1(1);
     }
 }

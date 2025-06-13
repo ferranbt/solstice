@@ -2,6 +2,7 @@ use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
 use foundry_compilers::artifacts::sourcemap::Jump;
+use foundry_compilers::artifacts::sourcemap::SourceElement;
 use foundry_compilers::artifacts::sourcemap::{parse, SourceMap};
 use foundry_compilers::artifacts::CompactBytecode;
 use foundry_compilers::artifacts::ConfigurableContractArtifact;
@@ -10,6 +11,7 @@ use foundry_compilers::ProjectPathsConfig;
 use revm_inspectors::tracing::types::CallTraceStep;
 use serde::Deserialize;
 use serde::Serialize;
+use slice_group_by::GroupBy;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -44,6 +46,7 @@ impl DebugNodeKind {
 #[derive(Deserialize)]
 pub struct DebugNode {
     pub kind: DebugNodeKind,
+    pub address: Address,
     pub steps: Vec<CallTraceStep>,
 }
 
@@ -65,6 +68,12 @@ fn generate_debug_units(
     for (file_path, artifact) in artifacts {
         if let Some(ast) = artifact.ast.clone() {
             let absolute_path = ast.absolute_path;
+
+            // check if the absolute_path starts with 'lib/'
+            // for now skip all the libs since we cannot parse them yet
+            if absolute_path.starts_with("lib/") {
+                continue;
+            }
 
             // Extract the compilation target contract name from the artifact path.
             // Each JSON artifact represents one compilation target, but the AST includes
@@ -111,7 +120,12 @@ fn generate_debug_units(
                                 source,
                             );
                             visitor.visit_contract(&node.clone()).unwrap();
-                            debug_unit.insert(contract_name, visitor.debug_unit);
+
+                            // just so that we can keep the reference around
+                            let mut dd = visitor.debug_unit;
+                            dd.source_id = artifact.id.unwrap();
+
+                            debug_unit.insert(contract_name, dd);
                         }
                     }
                 }
@@ -175,6 +189,27 @@ pub struct SourceLocation {
     pub end_column: Option<usize>,
     pub start_offset: usize,
     pub length: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BytecodeMap {
+    pub source_map: SourceMap,
+    pub pc_ic_map: IcPcMap,
+    pub ic_pc_map: PcIcMap,
+}
+
+impl BytecodeMap {
+    pub fn new(bytecode: &CompactBytecode) -> Self {
+        let source_map = parse(&bytecode.clone().source_map.unwrap()).unwrap();
+        let pc_ic_map = IcPcMap::new(bytecode.bytes().unwrap());
+        let ic_pc_map = PcIcMap::new(bytecode.bytes().unwrap());
+
+        Self {
+            source_map,
+            pc_ic_map,
+            ic_pc_map,
+        }
+    }
 }
 
 struct StatementVisitor {
@@ -251,10 +286,13 @@ impl StatementVisitor {
             in_constructor: false,
             contract_node: None,
             debug_unit: DebugUnit {
-                _name: String::new(),
+                source_id: 0,
+                name: String::new(),
                 path: path.clone(),
                 functions: HashMap::new(),
                 variables: Vec::new(),
+                bytecode: BytecodeMap::new(&bytecode),
+                deployed_bytecode: BytecodeMap::new(&deployed_bytecode),
             },
         }
     }
@@ -306,9 +344,16 @@ impl StatementVisitor {
                         root_block,
                         parameters: Vec::new(),
                         exit_pc: 0,
+                        loc: SourceLocationHelper {
+                            start: node.src.start,
+                            length: node.src.length.unwrap(),
+                        },
                     };
 
                     self.debug_unit.functions.insert(func.name.clone(), func);
+                }
+                NodeType::EnumDefinition => {
+                    // TODO
                 }
                 _ => {
                     panic!("Not handled {:?}", node.node_type);
@@ -423,17 +468,22 @@ impl StatementVisitor {
             self.find_exit_pc(self.contract_node.as_ref().unwrap())?
                 .expect("constructor should have an exit pc")
         } else {
-            self.find_exit_pc(node)?
-                .expect("function should have an exit pc")
+            self.find_exit_pc(node)?.unwrap_or(0) // TODO
         };
+
+        let entry_pc = self.get_entry_pc_for_function(node).unwrap_or(0); // TODO
 
         let function = Function {
             name,
-            entry_pc: self.get_entry_pc_for_function(node).unwrap(),
+            entry_pc,
             root_block,
             kind,
             parameters,
             exit_pc,
+            loc: SourceLocationHelper {
+                start: node.src.start,
+                length: node.src.length.unwrap(),
+            },
         };
 
         self.in_constructor = false;
@@ -488,13 +538,12 @@ impl StatementVisitor {
                     if let Some(pc) = self.get_pc_for_node(statement) {
                         let block_location = self.source_location_for(&statement.src);
 
-                        block.instructions.push(Instruction {
-                            pc,
-                            location: block_location.clone(),
-                            kind: InstructionKind::Statement,
-                        });
-
                         // Process for function calls within the expression
+                        // It is important this one takes precedence over the regular statemtent
+                        // If the statement si only the function call, they are going to share the same srcmap
+                        // (maybe we could check that directly too). If they statement is put before the function call
+                        // the match selector during tracing will pick the statement instead of the function call always
+                        // and we will not be able to detect the function call at all.
                         if let Some(expr) = statement.attribute::<Node>("expression") {
                             self.process_expression_for_function_calls(
                                 &expr,
@@ -502,6 +551,16 @@ impl StatementVisitor {
                                 &block_location,
                             )?;
                         }
+
+                        block.instructions.push(Instruction {
+                            pc,
+                            location: block_location.clone(),
+                            kind: InstructionKind::Statement,
+                            loc: SourceLocationHelper {
+                                start: statement.src.start,
+                                length: statement.src.length.unwrap(),
+                            },
+                        });
                     }
                 }
                 NodeType::IfStatement => {
@@ -515,6 +574,10 @@ impl StatementVisitor {
                                     pc,
                                     location: self.source_location_for(&condition.src),
                                     kind: InstructionKind::Statement,
+                                    loc: SourceLocationHelper {
+                                        start: condition.src.start,
+                                        length: condition.src.length.unwrap(),
+                                    },
                                 });
                             }
                         }
@@ -532,6 +595,10 @@ impl StatementVisitor {
                                     pc,
                                     location: self.source_location_for(&condition.src),
                                     kind: InstructionKind::Statement,
+                                    loc: SourceLocationHelper {
+                                        start: condition.src.start,
+                                        length: condition.src.length.unwrap(),
+                                    },
                                 });
                             }
                         }
@@ -550,6 +617,10 @@ impl StatementVisitor {
                             pc,
                             location: block_location.clone(),
                             kind: InstructionKind::VariableDeclaration(var.id as usize),
+                            loc: SourceLocationHelper {
+                                start: statement.src.start,
+                                length: statement.src.length.unwrap(),
+                            },
                         });
                     }
 
@@ -569,6 +640,10 @@ impl StatementVisitor {
                             pc,
                             location: self.source_location_for(&statement.src),
                             kind: InstructionKind::Statement,
+                            loc: SourceLocationHelper {
+                                start: statement.src.start,
+                                length: statement.src.length.unwrap(),
+                            },
                         });
                     }
                 }
@@ -602,6 +677,10 @@ impl StatementVisitor {
                         pc,
                         location: block_location.clone(),
                         kind: InstructionKind::FunctionCall,
+                        loc: SourceLocationHelper {
+                            start: node.src.start,
+                            length: node.src.length.unwrap(),
+                        },
                     });
                 }
 
@@ -749,6 +828,24 @@ impl StatementVisitor {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PcIcMap {
+    pub inner: HashMap<usize, usize>,
+}
+impl PcIcMap {
+    /// Creates a new `IcPcMap` for the given code.
+    pub fn new(code: &[u8]) -> Self {
+        Self {
+            inner: make_map::<true>(code),
+        }
+    }
+
+    /// Returns the instruction counter for the given program counter.
+    pub fn get(&self, pc: usize) -> Option<usize> {
+        self.inner.get(&pc).copied()
+    }
+}
+
 /// Maps from program counter to instruction counter.
 #[derive(Debug, Clone)]
 pub struct IcPcMap {
@@ -796,8 +893,103 @@ fn make_map<const PC_FIRST: bool>(code: &[u8]) -> HashMap<usize, usize> {
     map
 }
 
+#[derive(Debug, Clone)]
+pub enum MatchResult {
+    Function(Function),
+    FunctionWithOut(Function),
+    Instruction(Instruction),
+    ConstructorOut,
+}
+
+impl MatchResult {
+    fn kind(&self) -> &str {
+        match self {
+            MatchResult::Function(_) => "function",
+            MatchResult::FunctionWithOut(_) => "function_out",
+            MatchResult::Instruction(_) => "instruction",
+            MatchResult::ConstructorOut => "constructor_out",
+        }
+    }
+
+    fn get_source_element(&self) -> &SourceLocationHelper {
+        match self {
+            MatchResult::Function(func) => &func.loc,
+            MatchResult::FunctionWithOut(func) => &func.loc,
+            MatchResult::Instruction(inst) => &inst.loc,
+            MatchResult::ConstructorOut => panic!("constructor out has no source element b"),
+        }
+    }
+}
+
 // Conversion from your existing structures
 impl DebugUnit {
+    pub fn match_location(&self, loc: &SourceElement) -> (Option<MatchResult>, Vec<usize>) {
+        fn search_block(
+            block: &Block,
+            loc: &SourceElement,
+            parent_vars: Vec<usize>,
+        ) -> (Option<MatchResult>, Vec<usize>) {
+            let mut vars_in_scope = parent_vars.clone();
+
+            for inst in &block.instructions {
+                if let InstructionKind::VariableDeclaration(id) = inst.kind {
+                    vars_in_scope.push(id);
+                };
+
+                if inst.loc.matches(loc) {
+                    //if loc.offset() == 844 || loc.offset() == 881 {
+                    //    if !matches!(inst.kind, InstructionKind::FunctionCall) {
+                    //        continue;
+                    //    }
+                    //}
+
+                    return (Some(MatchResult::Instruction(inst.clone())), vars_in_scope);
+                }
+            }
+
+            for scope in &block.scopes {
+                if let (Some(result), vars) = search_block(scope, loc, vars_in_scope.clone()) {
+                    return (Some(result), vars);
+                }
+            }
+
+            // cond not done yet?
+            if let Some(cond) = &block.condition {
+                if cond.loc.matches(loc) {
+                    return (Some(MatchResult::Instruction(cond.clone())), vars_in_scope);
+                }
+            }
+
+            (None, vec![])
+        }
+
+        // try to find exact match by brute force for now
+        for func in self.functions.values() {
+            // Initialize vars_in_scope with state variable IDs
+            let mut vars_in_scope: Vec<usize> = self
+                .variables
+                .iter()
+                .filter(|v| v.state_variable)
+                .map(|v| v.id as usize)
+                .collect();
+
+            // add variables from the function parameters
+            for func in func.parameters.iter() {
+                vars_in_scope.push(func.id as usize);
+            }
+
+            if func.loc.matches(loc) {
+                return (Some(MatchResult::Function(func.clone())), vars_in_scope);
+            }
+
+            if let (Some(result), vars) = search_block(&func.root_block, loc, vars_in_scope) {
+                return (Some(result), vars);
+            }
+        }
+
+        (None, vec![])
+    }
+
     /// Get the source location for a given PC
     pub fn get_location_at_pc(&self, pc: usize) -> (Option<&Instruction>, Vec<usize>) {
         self.functions
@@ -867,6 +1059,7 @@ impl DebugUnit {
 pub enum StepKind {
     FunctionDefinition(String),
     FunctionCall,
+    ConstructorOut,
 
     #[default]
     Statement,
@@ -964,6 +1157,20 @@ pub enum TraceError {
     FunctionWithIncorrectExitPc(String, usize, String),
 }
 
+fn source_element_matches(a: &SourceElement, b: &SourceElement) -> bool {
+    a.offset() == b.offset() && a.length() == b.length() && a.index_i32() == b.index_i32()
+}
+
+#[derive(Debug, Clone)]
+struct OtherMatchLocation {
+    match_result: MatchResult,
+    source_location: SourceElement,
+    path: String,
+    source: (String, u32),
+    vars_in_scope: Vec<usize>,
+    pc: usize,
+}
+
 pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTrace, TraceError> {
     let content = fs::read_to_string(trace_path)
         .map_err(|e| TraceError::FailedToReadFile(trace_path.to_string(), e))?;
@@ -978,18 +1185,38 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
         .cloned()
         .collect();
 
+    println!("contracts involved {:?}", contracts_involved);
+
     let root_path = Path::new(workspace_path);
-    let debug_units = generate_debug_units(root_path, Some(&contracts_involved)).unwrap();
+    let debug_units = generate_debug_units(root_path, None).unwrap();
 
     let mut steps: Vec<DebugStep> = Vec::new();
-
-    let mut call_trace = Vec::new();
     let mut expecting_function = true;
 
     // map each contract to its current storage
     let mut contracts_storage = HashMap::new();
 
+    // get all the debug unit and sort them out by source id
+    let mut debug_units_by_source_id = HashMap::new();
+    for (_, dd) in debug_units.iter() {
+        debug_units_by_source_id
+            .entry(dd.source_id)
+            .or_insert_with(Vec::new)
+            .push(dd.clone());
+    }
+
+    let mut matched_locations = Vec::new();
+
     for node in context.debug_arena.iter() {
+        // name of the contract in this step
+        let contract = context
+            .contracts
+            .identified_contracts
+            .get(&node.address)
+            .unwrap();
+
+        let debug_unit = debug_units.get(contract).unwrap();
+
         for step in node.steps.iter() {
             let memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
             let stack: Vec<Bytes> = step
@@ -1017,111 +1244,347 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                     );
             }
 
-            if let Some(contract_name) = context.contracts.identified_contracts.get(&step.contract)
-            {
-                if let Some(debug_unit) = debug_units.get(contract_name) {
-                    // for all the functions, find the entry pc
-                    for func in debug_unit.functions.values() {
-                        if func.entry_pc == step.pc
-                            && (func.kind == FunctionKind::Function
-                                // Constructor is only valid if the trace is for a create operation
-                                || (func.kind == FunctionKind::Constructor && node.kind.is_create()))
-                        {
-                            if !expecting_function {
-                                return Err(TraceError::FoundFunctionEntryWithoutCall);
-                            }
-                            expecting_function = false;
+            //if let Some(debug_unit) = debug_units_by_source_id.get(&step.source_id) {
+            //if let Some(contract_name) = context.contracts.identified_contracts.get(&step.contract)
+            //{
+            //    if let Some(debug_unit) = debug_units.get(contract_name) {
+            let pc = step.pc;
 
-                            let is_first_step = steps.is_empty();
+            let bytecode = if node.kind.is_create() {
+                &debug_unit.bytecode
+            } else {
+                &debug_unit.deployed_bytecode
+            };
 
-                            steps.push(DebugStep {
-                                location: func.root_block.location.clone(),
-                                path: debug_unit.path.clone(),
-                                memory: memory.clone(),
-                                stack: stack.clone(),
-                                storage: storage.clone(),
-                                variables_in_scope: vec![],
-                                call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
-                                kind: StepKind::FunctionDefinition(func.name.clone()),
-                            });
+            let ic_index = bytecode.ic_pc_map.get(pc).unwrap();
+            let source_location = bytecode.source_map.get(ic_index).unwrap();
+            let source_id = source_location.index_i32() as u32;
 
-                            // add the entry to the call trace alongside its position in the steps vector
-                            if !is_first_step {
-                                // we do not add any for the root function call
-                                call_trace.push((func, steps.len() - 1));
-                            }
-                        }
+            println!(
+                "pc {:?} map {:?} srcmap {:?} jump {:?}",
+                pc,
+                ic_index,
+                source_location,
+                source_location.jump(),
+            );
+
+            let debug_units_to_test =
+                if let Some(debug_unit) = debug_units_by_source_id.get(&source_id) {
+                    debug_unit
+                } else {
+                    continue;
+                };
+
+            /*
+            if source_location.offset() == 339 {
+                println!("debug unit functions");
+                for func in debug_unit_to_test.functions.values() {
+                    println!("func {:?} {:?}", func.name, func.loc);
+                }
+                panic!("xx");
+            }
+            */
+
+            for debug_unit_to_test in debug_units_to_test.iter() {
+                if let (Some(loc), vars) = debug_unit_to_test.match_location(source_location) {
+                    println!("location {:?}", loc.kind());
+                    println!("vars {:?}", vars);
+
+                    matched_locations.push(OtherMatchLocation {
+                        match_result: loc,
+                        source_location: source_location.clone(),
+                        path: debug_unit_to_test.path.clone(),
+                        source: (debug_unit_to_test.name.clone(), source_id),
+                        vars_in_scope: vars,
+                        pc,
+                    });
+                } else {
+                    println!("cannot find location");
+                }
+            }
+
+            // find the mapping source location for this pc
+
+            /*
+            // for all the functions, find the entry pc
+            for func in debug_unit.functions.values() {
+                if func.entry_pc == step.pc
+                    && (func.kind == FunctionKind::Function
+                        // Constructor is only valid if the trace is for a create operation
+                        || (func.kind == FunctionKind::Constructor && node.kind.is_create()))
+                {
+                    if !expecting_function {
+                        return Err(TraceError::FoundFunctionEntryWithoutCall);
                     }
-                    // same with exit pc
-                    for func in debug_unit.functions.values() {
-                        if func.exit_pc == step.pc
-                            && (func.kind == FunctionKind::Function
-                                || (func.kind == FunctionKind::Constructor
-                                    && node.kind.is_create()))
-                        {
-                            if expecting_function {
-                                return Err(TraceError::FoundFunctionExitWithoutCall);
-                            }
+                    expecting_function = false;
 
-                            // pop the last call trace and make sure the function is the same
-                            let last_call = call_trace.pop();
-                            if let Some(last_call) = last_call {
-                                if last_call.0.name.clone() != func.name {
-                                    return Err(TraceError::FunctionWithIncorrectExitPc(
-                                        func.name.clone(),
-                                        func.exit_pc,
-                                        last_call.0.name.clone(),
-                                    ));
-                                }
-                            }
-                        }
+                    let is_first_step = steps.is_empty();
+
+                    steps.push(DebugStep {
+                        location: func.root_block.location.clone(),
+                        path: debug_unit.path.clone(),
+                        memory: memory.clone(),
+                        stack: stack.clone(),
+                        storage: storage.clone(),
+                        variables_in_scope: vec![],
+                        call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
+                        kind: StepKind::FunctionDefinition(func.name.clone()),
+                    });
+
+                    // add the entry to the call trace alongside its position in the steps vector
+                    if !is_first_step {
+                        // we do not add any for the root function call
+                        call_trace.push((func, steps.len() - 1));
+                    }
+                }
+            }
+            // same with exit pc
+            for func in debug_unit.functions.values() {
+                if func.exit_pc == step.pc
+                    && (func.kind == FunctionKind::Function
+                        || (func.kind == FunctionKind::Constructor
+                            && node.kind.is_create()))
+                {
+                    if expecting_function {
+                        return Err(TraceError::FoundFunctionExitWithoutCall);
                     }
 
-                    if let (Some(instruction), variables_in_scope) =
-                        debug_unit.get_location_at_pc(step.pc)
-                    {
-                        // get a list of all the calltrace ids
-                        if expecting_function {
-                            return Err(TraceError::FoundInstructionWithoutFunctionEntry);
-                        }
-
-                        println!("instruction {:?}", instruction);
-
-                        if matches!(instruction.kind, InstructionKind::FunctionCall) {
-                            expecting_function = true;
-
-                            steps.push(DebugStep {
-                                location: instruction.location.clone(),
-                                path: debug_unit.path.clone(),
-                                variables_in_scope,
-                                memory: memory.clone(),
-                                stack,
-                                storage,
-                                call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
-                                kind: StepKind::FunctionCall,
-                            });
-                        } else {
-                            steps.push(DebugStep {
-                                location: instruction.location.clone(),
-                                path: debug_unit.path.clone(),
-                                variables_in_scope,
-                                memory: memory.clone(),
-                                stack,
-                                storage,
-                                call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
-                                kind: StepKind::Statement,
-                            });
+                    // pop the last call trace and make sure the function is the same
+                    let last_call = call_trace.pop();
+                    if let Some(last_call) = last_call {
+                        if last_call.0.name.clone() != func.name {
+                            return Err(TraceError::FunctionWithIncorrectExitPc(
+                                func.name.clone(),
+                                func.exit_pc,
+                                last_call.0.name.clone(),
+                            ));
                         }
                     }
                 }
             }
+
+            if let (Some(instruction), variables_in_scope) =
+                debug_unit.get_location_at_pc(step.pc)
+            {
+                // get a list of all the calltrace ids
+                if expecting_function {
+                    return Err(TraceError::FoundInstructionWithoutFunctionEntry);
+                }
+
+                println!("instruction {:?}", instruction);
+
+                if matches!(instruction.kind, InstructionKind::FunctionCall) {
+                    expecting_function = true;
+
+                    steps.push(DebugStep {
+                        location: instruction.location.clone(),
+                        path: debug_unit.path.clone(),
+                        variables_in_scope,
+                        memory: memory.clone(),
+                        stack,
+                        storage,
+                        call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
+                        kind: StepKind::FunctionCall,
+                    });
+                } else {
+                    steps.push(DebugStep {
+                        location: instruction.location.clone(),
+                        path: debug_unit.path.clone(),
+                        variables_in_scope,
+                        memory: memory.clone(),
+                        stack,
+                        storage,
+                        call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
+                        kind: StepKind::Statement,
+                    });
+                }
+            }
+            */
+            //}
+            // }
+        }
+
+        if node.kind.is_create() {
+            // we have to put a new "fake" instruction to signal that we got out of the constructor because
+            // the way the constructor is laid out in the srcmap/pc is srcmap of the contract call
+            // and then srcmap of internal elements but not a srcmap for the out call for this contract
+            // so we have to add a new instruction to signal that we got out of the constructor
+            matched_locations.push(OtherMatchLocation {
+                match_result: MatchResult::ConstructorOut,
+                source_location: Default::default(),
+                path: "".to_string(),
+                source: ("".to_string(), 0),
+                vars_in_scope: vec![],
+                pc: 0,
+            });
         }
     }
 
-    // the last step should have call trace equal to 0
-    if !steps.last().unwrap().call_trace.is_empty() {
-        return Err(TraceError::LastStepShouldHaveCallTraceEqualZero);
+    println!("UNCLEAN VERSION");
+    for i in matched_locations.iter() {
+        println!(
+            "matched location {:?} {:?}",
+            i.source_location,
+            i.match_result.kind()
+        );
     }
+
+    let chunks = matched_locations
+        .linear_group_by(|a, b| source_element_matches(&a.source_location, &b.source_location));
+    let mut final_matched_locations = Vec::new();
+
+    for chunk in chunks {
+        // figure out the first entry to know how we are going to match and process this chunk
+        let first_entry = chunk.first().unwrap();
+
+        match &first_entry.match_result {
+            MatchResult::Function(_) => {
+                // find the element with the Out if there is any, that signals the function exit
+                let func_with_out = chunk.iter().find(|i| i.source_location.jump() == Jump::Out);
+
+                if let Some(func_with_out) = func_with_out {
+                    let func_core = match &func_with_out.match_result {
+                        MatchResult::Function(func) => func,
+                        _ => panic!("this is not expected to happen"),
+                    };
+                    final_matched_locations.push(OtherMatchLocation {
+                        match_result: MatchResult::FunctionWithOut(func_core.clone()),
+                        source_location: func_with_out.source_location.clone(), // we care less about this ones
+                        path: func_with_out.path.clone(),
+                        source: ("".to_string(), 0),
+                        vars_in_scope: vec![],
+                        pc: 0,
+                    });
+                } else {
+                    // otherwise, pick the last element that matches
+                    let last_element = chunk.last().unwrap();
+                    final_matched_locations.push(last_element.clone());
+                }
+            }
+            MatchResult::Instruction(inst) => {
+                if matches!(inst.kind, InstructionKind::FunctionCall) {
+                    // for function calls we must have a function with in, because whena  function call happens
+                    // you have some sourcemap pc pointer when it returns that we do not need, so in order to filter that, we keep the chunk
+                    // with the in
+                    let does_have_in = chunk.iter().find(|i| i.source_location.jump() == Jump::In);
+                    if does_have_in.is_none() {
+                        continue;
+                    }
+                }
+
+                // just get the first instruction
+                final_matched_locations.push(first_entry.clone());
+            }
+            MatchResult::ConstructorOut => {
+                // push it as it is, there should only be one of this
+                final_matched_locations.push(first_entry.clone());
+            }
+            MatchResult::FunctionWithOut(_) => {
+                panic!("this is not expected to happen")
+            }
+        }
+    }
+
+    println!("show final matched locations");
+    for i in final_matched_locations.iter() {
+        println!("=> {:?}", i.match_result.kind());
+    }
+
+    let mut new_debug_steps = Vec::new();
+    let mut call_trace = Vec::new();
+    let mut expecting_function = true;
+
+    for i in final_matched_locations.iter() {
+        let local_call_trace = call_trace.iter().map(|(_, pos)| *pos).collect();
+        let path = i.path.clone();
+
+        match &i.match_result {
+            MatchResult::Function(func) => {
+                println!("function {:?}", func.name);
+                if !expecting_function {
+                    return Err(TraceError::FoundFunctionEntryWithoutCall);
+                }
+                expecting_function = false;
+
+                let is_first_step = new_debug_steps.is_empty();
+                if !is_first_step {
+                    call_trace.push((func, new_debug_steps.len() - 1));
+                }
+
+                new_debug_steps.push(DebugStep {
+                    location: func.root_block.location.clone(),
+                    path,
+                    variables_in_scope: vec![],
+                    call_trace: local_call_trace,
+                    kind: StepKind::FunctionDefinition(func.name.clone()),
+                    ..Default::default()
+                });
+            }
+            MatchResult::ConstructorOut => {
+                println!("constructor out");
+                call_trace.pop();
+            }
+            MatchResult::FunctionWithOut(func) => {
+                println!("function with out {:?}", func.name);
+
+                // pop the last call trace and make sure the function is the same
+                let last_call = call_trace.pop();
+                if let Some(last_call) = last_call {
+                    if last_call.0.name.clone() != func.name {
+                        return Err(TraceError::FunctionWithIncorrectExitPc(
+                            func.name.clone(),
+                            func.exit_pc,
+                            last_call.0.name.clone(),
+                        ));
+                    }
+                }
+            }
+            MatchResult::Instruction(inst) => {
+                let stmt_kind = match inst.kind {
+                    InstructionKind::FunctionCall => StepKind::FunctionCall,
+                    _ => StepKind::Statement,
+                };
+
+                new_debug_steps.push(DebugStep {
+                    location: inst.location.clone(),
+                    path,
+                    variables_in_scope: i.vars_in_scope.clone(),
+                    call_trace: local_call_trace,
+                    kind: stmt_kind,
+                    ..Default::default()
+                });
+
+                if matches!(inst.kind, InstructionKind::FunctionCall) {
+                    expecting_function = true;
+                }
+            }
+        }
+        // println!("i => {:?}", i);
+    }
+
+    // the last step should have call trace equal to 0
+    if !new_debug_steps.last().unwrap().call_trace.is_empty() {
+        tracing::warn!("last step has call trace");
+        //     return Err(TraceError::LastStepShouldHaveCallTraceEqualZero);
+    }
+
+    // loop over all the debug units and get the variable definitions
+    let mut variable_definitions = HashMap::new();
+    for debug_unit in debug_units.values() {
+        for variable in debug_unit.variables.iter() {
+            println!("inserting variable {:?}", variable.id);
+            variable_definitions.insert(variable.id, variable.clone());
+        }
+    }
+
+    let final_trace = DebugTrace {
+        steps: new_debug_steps,
+        variables: variable_definitions,
+    };
+
+    return Ok(final_trace);
+
+    println!("final_trace => {:?}", final_trace);
 
     // loop over all the debug units and get the variable definitions
     let mut variable_definitions = HashMap::new();
@@ -1139,10 +1602,13 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
 
 #[derive(Debug, Clone)]
 pub struct DebugUnit {
-    pub _name: String,
+    pub name: String,
     pub path: String,
     pub functions: HashMap<String, Function>,
     pub variables: Vec<Variable>,
+    pub source_id: u32,
+    pub bytecode: BytecodeMap,
+    pub deployed_bytecode: BytecodeMap,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1150,6 +1616,18 @@ pub enum FunctionKind {
     Constructor,
     Function,
     Modifier,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SourceLocationHelper {
+    pub start: usize,
+    pub length: usize,
+}
+
+impl SourceLocationHelper {
+    pub fn matches(&self, loc: &SourceElement) -> bool {
+        self.start == loc.offset() as usize && self.length == loc.length() as usize
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1160,6 +1638,7 @@ pub struct Function {
     pub exit_pc: usize,
     pub root_block: Block,
     pub parameters: Vec<Variable>,
+    pub loc: SourceLocationHelper,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1194,6 +1673,7 @@ pub struct Instruction {
     pub pc: usize,
     pub location: SourceLocation,
     pub kind: InstructionKind,
+    pub loc: SourceLocationHelper,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -1385,6 +1865,9 @@ mod tests {
                         )
                         .unwrap();
                     }
+                    StepKind::ConstructorOut => {
+                        panic!("it is only a placeholder for the constructor out");
+                    }
                     StepKind::FunctionCall => {
                         writeln!(
                             output,
@@ -1394,6 +1877,10 @@ mod tests {
                         .unwrap();
                     }
                     StepKind::Statement => {
+                        // println!("print statement");
+                        // println!("variables in scope {:?}", step.variables_in_scope);
+                        // println!("variables {:?}", self.variables);
+
                         // Get names of variables in scope
                         let vars_in_scope: Vec<String> = step
                             .variables_in_scope
