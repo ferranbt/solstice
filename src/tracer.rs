@@ -194,7 +194,7 @@ pub struct SourceLocation {
 #[derive(Debug, Clone)]
 pub struct BytecodeMap {
     pub source_map: SourceMap,
-    pub pc_ic_map: IcPcMap,
+    pub _pc_ic_map: IcPcMap,
     pub ic_pc_map: PcIcMap,
 }
 
@@ -206,7 +206,7 @@ impl BytecodeMap {
 
         Self {
             source_map,
-            pc_ic_map,
+            _pc_ic_map: pc_ic_map,
             ic_pc_map,
         }
     }
@@ -215,13 +215,6 @@ impl BytecodeMap {
 struct StatementVisitor {
     pub source: String,
     pub debug_unit: DebugUnit,
-
-    pub source_map: SourceMap,
-    pub pc_ic_map: IcPcMap,
-
-    // this are the ones used for deployment
-    pub deployed_source_map: SourceMap,
-    pub deployed_pc_ic_map: IcPcMap,
 
     // in_constructor signals if we are in the constructor of the contract
     pub in_constructor: bool,
@@ -278,11 +271,7 @@ impl StatementVisitor {
         source: String,
     ) -> Self {
         Self {
-            source_map: parse(&bytecode.clone().source_map.unwrap()).unwrap(),
-            pc_ic_map: IcPcMap::new(bytecode.bytes().unwrap()),
             source: source.clone(),
-            deployed_source_map: parse(&deployed_bytecode.clone().source_map.unwrap()).unwrap(),
-            deployed_pc_ic_map: IcPcMap::new(deployed_bytecode.bytes().unwrap()),
             in_constructor: false,
             contract_node: None,
             debug_unit: DebugUnit {
@@ -340,10 +329,8 @@ impl StatementVisitor {
                     let func = Function {
                         name: node.attribute("name").ok_or_missing_attribute("name")?,
                         kind: FunctionKind::Modifier,
-                        entry_pc: 0,
                         root_block,
                         parameters: Vec::new(),
-                        exit_pc: 0,
                         loc: SourceLocationHelper {
                             start: node.src.start,
                             length: node.src.length.unwrap(),
@@ -411,34 +398,6 @@ impl StatementVisitor {
         }
     }
 
-    fn find_exit_pc(&self, node: &Node) -> StatementVisitorResult<Option<usize>> {
-        let (pc_ic_map, source_map) = self.get_source_map();
-
-        // Find source elements within function's range that have Jump::Out
-        let start = node.src.start as u32;
-        let length = node.src.length.map_or(0, |l| l as u32);
-
-        let matches = source_map
-            .iter()
-            .enumerate()
-            .filter(|(_, elem)| {
-                if self.in_constructor {
-                    // constructor does not have a jump out, mabye because it does not have a switch
-                    elem.offset() == start && elem.length() == length
-                } else {
-                    elem.offset() == start && elem.length() == length && elem.jump() == Jump::Out
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // Get the PC for the last matching element (if any)
-        if let Some((idx, _)) = matches.last() {
-            Ok(pc_ic_map.get(*idx))
-        } else {
-            Ok(None)
-        }
-    }
-
     fn build_debug_function(
         &mut self,
         node: &Node,
@@ -463,23 +422,11 @@ impl StatementVisitor {
             Block::default()
         };
 
-        let exit_pc = if is_constructor {
-            // the constructor does not have an ouput but we can use the refercence to the contract node for this
-            self.find_exit_pc(self.contract_node.as_ref().unwrap())?
-                .expect("constructor should have an exit pc")
-        } else {
-            self.find_exit_pc(node)?.unwrap_or(0) // TODO
-        };
-
-        let entry_pc = self.get_entry_pc_for_function(node).unwrap_or(0); // TODO
-
         let function = Function {
             name,
-            entry_pc,
             root_block,
             kind,
             parameters,
-            exit_pc,
             loc: SourceLocationHelper {
                 start: node.src.start,
                 length: node.src.length.unwrap(),
@@ -488,37 +435,6 @@ impl StatementVisitor {
 
         self.in_constructor = false;
         Ok(function)
-    }
-
-    fn get_entry_pc_for_function(&self, node: &Node) -> Option<usize> {
-        let (pc_ic_map, source_map) = self.get_source_map();
-
-        let start = node.src.start as u32;
-        let length = node.src.length? as u32;
-
-        // Get all matching source elements for this node
-        let matches: Vec<_> = source_map
-            .iter()
-            .enumerate()
-            .filter(|(_, elem)| elem.offset() == start && elem.length() == length)
-            .collect();
-
-        // Find the match that comes after a JUMP OUT instruction
-        for (idx, _) in &matches {
-            let idx = *idx;
-
-            // Check if there's a previous instruction with JUMP OUT
-            if idx > 0 {
-                let prev_elem = &source_map[idx - 1];
-                if prev_elem.jump() == Jump::Out {
-                    // Return the PC for this match
-                    return pc_ic_map.get(idx);
-                }
-            }
-        }
-
-        // If no match after JUMP OUT found, return the first match's PC
-        matches.first().and_then(|(idx, _)| pc_ic_map.get(*idx))
     }
 
     fn build_debug_block(&mut self, node: &Node) -> StatementVisitorResult<Block> {
@@ -534,52 +450,45 @@ impl StatementVisitor {
         for statement in &statements {
             match statement.node_type {
                 NodeType::ExpressionStatement => {
-                    // Add regular statement instruction
-                    if let Some(pc) = self.get_pc_for_node(statement) {
-                        let block_location = self.source_location_for(&statement.src);
+                    let block_location = self.source_location_for(&statement.src);
 
-                        // Process for function calls within the expression
-                        // It is important this one takes precedence over the regular statemtent
-                        // If the statement si only the function call, they are going to share the same srcmap
-                        // (maybe we could check that directly too). If they statement is put before the function call
-                        // the match selector during tracing will pick the statement instead of the function call always
-                        // and we will not be able to detect the function call at all.
-                        if let Some(expr) = statement.attribute::<Node>("expression") {
-                            self.process_expression_for_function_calls(
-                                &expr,
-                                &mut block,
-                                &block_location,
-                            )?;
-                        }
-
-                        block.instructions.push(Instruction {
-                            pc,
-                            location: block_location.clone(),
-                            kind: InstructionKind::Statement,
-                            loc: SourceLocationHelper {
-                                start: statement.src.start,
-                                length: statement.src.length.unwrap(),
-                            },
-                        });
+                    // Process for function calls within the expression
+                    // It is important this one takes precedence over the regular statemtent
+                    // If the statement si only the function call, they are going to share the same srcmap
+                    // (maybe we could check that directly too). If they statement is put before the function call
+                    // the match selector during tracing will pick the statement instead of the function call always
+                    // and we will not be able to detect the function call at all.
+                    if let Some(expr) = statement.attribute::<Node>("expression") {
+                        self.process_expression_for_function_calls(
+                            &expr,
+                            &mut block,
+                            &block_location,
+                        )?;
                     }
+
+                    block.instructions.push(Instruction {
+                        location: block_location.clone(),
+                        kind: InstructionKind::Statement,
+                        loc: SourceLocationHelper {
+                            start: statement.src.start,
+                            length: statement.src.length.unwrap(),
+                        },
+                    });
                 }
                 NodeType::IfStatement => {
                     // Create single block for if statement body
                     if let Some(true_body) = statement.attribute("trueBody") {
                         let mut if_block = self.build_debug_block(&true_body)?;
                         // Add the condition to the block
-                        if let Some(condition) = statement.attribute("condition") {
-                            if let Some(pc) = self.get_pc_for_node(&condition) {
-                                if_block.condition = Some(Instruction {
-                                    pc,
-                                    location: self.source_location_for(&condition.src),
-                                    kind: InstructionKind::Statement,
-                                    loc: SourceLocationHelper {
-                                        start: condition.src.start,
-                                        length: condition.src.length.unwrap(),
-                                    },
-                                });
-                            }
+                        if let Some(condition) = statement.attribute::<Node>("condition") {
+                            if_block.condition = Some(Instruction {
+                                location: self.source_location_for(&condition.src),
+                                kind: InstructionKind::Statement,
+                                loc: SourceLocationHelper {
+                                    start: condition.src.start,
+                                    length: condition.src.length.unwrap(),
+                                },
+                            });
                         }
                         block.scopes.push(if_block);
                     }
@@ -589,18 +498,15 @@ impl StatementVisitor {
                     if let Some(body) = &statement.body {
                         let mut for_block = self.build_debug_block(body)?;
                         // Add the condition to the block
-                        if let Some(condition) = statement.attribute("condition") {
-                            if let Some(pc) = self.get_pc_for_node(&condition) {
-                                for_block.condition = Some(Instruction {
-                                    pc,
-                                    location: self.source_location_for(&condition.src),
-                                    kind: InstructionKind::Statement,
-                                    loc: SourceLocationHelper {
-                                        start: condition.src.start,
-                                        length: condition.src.length.unwrap(),
-                                    },
-                                });
-                            }
+                        if let Some(condition) = statement.attribute::<Node>("condition") {
+                            for_block.condition = Some(Instruction {
+                                location: self.source_location_for(&condition.src),
+                                kind: InstructionKind::Statement,
+                                loc: SourceLocationHelper {
+                                    start: condition.src.start,
+                                    length: condition.src.length.unwrap(),
+                                },
+                            });
                         }
                         block.scopes.push(for_block);
                     }
@@ -612,17 +518,14 @@ impl StatementVisitor {
 
                     let block_location = self.source_location_for(&statement.src);
 
-                    if let Some(pc) = self.get_pc_for_node(statement) {
-                        block.instructions.push(Instruction {
-                            pc,
-                            location: block_location.clone(),
-                            kind: InstructionKind::VariableDeclaration(var.id as usize),
-                            loc: SourceLocationHelper {
-                                start: statement.src.start,
-                                length: statement.src.length.unwrap(),
-                            },
-                        });
-                    }
+                    block.instructions.push(Instruction {
+                        location: block_location.clone(),
+                        kind: InstructionKind::VariableDeclaration(var.id as usize),
+                        loc: SourceLocationHelper {
+                            start: statement.src.start,
+                            length: statement.src.length.unwrap(),
+                        },
+                    });
 
                     // parse the initial value for other expressions because it might include a function call that we need to parse
                     if let Some(expr) = statement.attribute::<Node>("initialValue") {
@@ -635,17 +538,14 @@ impl StatementVisitor {
                 }
                 _ => {
                     // Regular statement
-                    if let Some(pc) = self.get_pc_for_node(statement) {
-                        block.instructions.push(Instruction {
-                            pc,
-                            location: self.source_location_for(&statement.src),
-                            kind: InstructionKind::Statement,
-                            loc: SourceLocationHelper {
-                                start: statement.src.start,
-                                length: statement.src.length.unwrap(),
-                            },
-                        });
-                    }
+                    block.instructions.push(Instruction {
+                        location: self.source_location_for(&statement.src),
+                        kind: InstructionKind::Statement,
+                        loc: SourceLocationHelper {
+                            start: statement.src.start,
+                            length: statement.src.length.unwrap(),
+                        },
+                    });
                 }
             }
         }
@@ -672,17 +572,14 @@ impl StatementVisitor {
                 }
 
                 // Add function call instruction using block's location
-                if let Some(pc) = self.get_first_pc_for_node(node) {
-                    block.instructions.push(Instruction {
-                        pc,
-                        location: block_location.clone(),
-                        kind: InstructionKind::FunctionCall,
-                        loc: SourceLocationHelper {
-                            start: node.src.start,
-                            length: node.src.length.unwrap(),
-                        },
-                    });
-                }
+                block.instructions.push(Instruction {
+                    location: block_location.clone(),
+                    kind: InstructionKind::FunctionCall,
+                    loc: SourceLocationHelper {
+                        start: node.src.start,
+                        length: node.src.length.unwrap(),
+                    },
+                });
 
                 // Still process arguments for nested function calls
                 if let Some(args) = node.attribute::<Vec<Node>>("arguments") {
@@ -717,33 +614,6 @@ impl StatementVisitor {
             _ => {}
         }
         Ok(())
-    }
-
-    fn get_pc_for_node(&self, node: &Node) -> Option<usize> {
-        let (pc_ic_map, source_map) = self.get_source_map();
-
-        let start = node.src.start as u32;
-        let length = node.src.length? as u32;
-
-        source_map
-            .iter()
-            .enumerate()
-            .filter(|(_, elem)| elem.offset() == start && elem.length() == length)
-            .next_back()
-            .and_then(|(idx, _)| pc_ic_map.get(idx))
-    }
-
-    fn get_first_pc_for_node(&self, node: &Node) -> Option<usize> {
-        let (pc_ic_map, source_map) = self.get_source_map();
-
-        let start = node.src.start as u32;
-        let length = node.src.length? as u32;
-
-        source_map
-            .iter()
-            .enumerate()
-            .find(|(_, elem)| elem.offset() == start && elem.length() == length)
-            .and_then(|(idx, _)| pc_ic_map.get(idx))
     }
 
     fn build_debug_variable(&self, node: &Node) -> StatementVisitorResult<Option<Variable>> {
@@ -815,16 +685,6 @@ impl StatementVisitor {
         }
 
         Ok(parameters)
-    }
-
-    fn get_source_map(&self) -> (&IcPcMap, &SourceMap) {
-        let (pc_ic_map, source_map) = if self.in_constructor {
-            (&self.pc_ic_map, &self.source_map)
-        } else {
-            (&self.deployed_pc_ic_map, &self.deployed_source_map)
-        };
-
-        (pc_ic_map, source_map)
     }
 }
 
@@ -989,70 +849,6 @@ impl DebugUnit {
 
         (None, vec![])
     }
-
-    /// Get the source location for a given PC
-    pub fn get_location_at_pc(&self, pc: usize) -> (Option<&Instruction>, Vec<usize>) {
-        self.functions
-            .values()
-            .find_map(|function| {
-                // Helper function to recursively search blocks
-                fn search_block(
-                    block: &Block,
-                    pc: usize,
-                    parent_vars: Vec<usize>,
-                ) -> (Option<&Instruction>, Vec<usize>) {
-                    let mut vars_in_scope = parent_vars.clone();
-
-                    // Check instructions in current block
-                    for inst in &block.instructions {
-                        if let InstructionKind::VariableDeclaration(id) = inst.kind {
-                            vars_in_scope.push(id);
-                        };
-
-                        if inst.pc == pc {
-                            return (Some(inst), vars_in_scope);
-                        }
-                    }
-
-                    // Recursively check nested scopes
-                    for scope in &block.scopes {
-                        let (found, vars) = search_block(scope, pc, vars_in_scope.clone());
-                        if found.is_some() {
-                            return (found, vars);
-                        }
-                    }
-
-                    // Check condition
-                    if let Some(ref cond) = block.condition {
-                        if cond.pc == pc {
-                            return (Some(cond), vars_in_scope);
-                        }
-                    }
-                    (None, vars_in_scope)
-                }
-
-                // Initialize vars_in_scope with state variable IDs
-                let mut vars_in_scope: Vec<usize> = self
-                    .variables
-                    .iter()
-                    .filter(|v| v.state_variable)
-                    .map(|v| v.id as usize)
-                    .collect();
-
-                // add variables from the function parameters
-                for func in function.parameters.iter() {
-                    vars_in_scope.push(func.id as usize);
-                }
-
-                let result = search_block(&function.root_block, pc, vars_in_scope);
-                if result.0.is_some() {
-                    Some(result)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or((None, vec![]))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
@@ -1153,8 +949,8 @@ pub enum TraceError {
     #[error("Last step should have call trace equal to 0")]
     LastStepShouldHaveCallTraceEqualZero,
 
-    #[error("Function with incorrect exit pc: {0} {1} {2}")]
-    FunctionWithIncorrectExitPc(String, usize, String),
+    #[error("Function with incorrect exit pc: {0} {1}")]
+    FunctionWithIncorrectExitPc(String, String),
 }
 
 fn source_element_matches(a: &SourceElement, b: &SourceElement) -> bool {
@@ -1166,9 +962,7 @@ struct OtherMatchLocation {
     match_result: MatchResult,
     source_location: SourceElement,
     path: String,
-    source: (String, u32),
     vars_in_scope: Vec<usize>,
-    pc: usize,
 }
 
 pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTrace, TraceError> {
@@ -1189,9 +983,6 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
 
     let root_path = Path::new(workspace_path);
     let debug_units = generate_debug_units(root_path, None).unwrap();
-
-    let mut steps: Vec<DebugStep> = Vec::new();
-    let mut expecting_function = true;
 
     // map each contract to its current storage
     let mut contracts_storage = HashMap::new();
@@ -1244,10 +1035,6 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                     );
             }
 
-            //if let Some(debug_unit) = debug_units_by_source_id.get(&step.source_id) {
-            //if let Some(contract_name) = context.contracts.identified_contracts.get(&step.contract)
-            //{
-            //    if let Some(debug_unit) = debug_units.get(contract_name) {
             let pc = step.pc;
 
             let bytecode = if node.kind.is_create() {
@@ -1275,16 +1062,6 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                     continue;
                 };
 
-            /*
-            if source_location.offset() == 339 {
-                println!("debug unit functions");
-                for func in debug_unit_to_test.functions.values() {
-                    println!("func {:?} {:?}", func.name, func.loc);
-                }
-                panic!("xx");
-            }
-            */
-
             for debug_unit_to_test in debug_units_to_test.iter() {
                 if let (Some(loc), vars) = debug_unit_to_test.match_location(source_location) {
                     println!("location {:?}", loc.kind());
@@ -1294,9 +1071,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                         match_result: loc,
                         source_location: source_location.clone(),
                         path: debug_unit_to_test.path.clone(),
-                        source: (debug_unit_to_test.name.clone(), source_id),
                         vars_in_scope: vars,
-                        pc,
                     });
                 } else {
                     println!("cannot find location");
@@ -1413,9 +1188,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                 match_result: MatchResult::ConstructorOut,
                 source_location: Default::default(),
                 path: "".to_string(),
-                source: ("".to_string(), 0),
                 vars_in_scope: vec![],
-                pc: 0,
             });
         }
     }
@@ -1451,9 +1224,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                         match_result: MatchResult::FunctionWithOut(func_core.clone()),
                         source_location: func_with_out.source_location.clone(), // we care less about this ones
                         path: func_with_out.path.clone(),
-                        source: ("".to_string(), 0),
                         vars_in_scope: vec![],
-                        pc: 0,
                     });
                 } else {
                     // otherwise, pick the last element that matches
@@ -1533,7 +1304,6 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                     if last_call.0.name.clone() != func.name {
                         return Err(TraceError::FunctionWithIncorrectExitPc(
                             func.name.clone(),
-                            func.exit_pc,
                             last_call.0.name.clone(),
                         ));
                     }
@@ -1634,8 +1404,6 @@ impl SourceLocationHelper {
 pub struct Function {
     pub name: String,
     pub kind: FunctionKind,
-    pub entry_pc: usize,
-    pub exit_pc: usize,
     pub root_block: Block,
     pub parameters: Vec<Variable>,
     pub loc: SourceLocationHelper,
@@ -1670,7 +1438,6 @@ pub enum InstructionKind {
 
 #[derive(Debug, Clone)]
 pub struct Instruction {
-    pub pc: usize,
     pub location: SourceLocation,
     pub kind: InstructionKind,
     pub loc: SourceLocationHelper,
