@@ -36,9 +36,9 @@ contract Example is ExampleParent, Parent {
 }
 
 contract ExampleTwoParents is ParentWithConstructor {
-    uint256 value;
+    uint256 value2;
 
     constructor() ParentWithConstructor() {
-        value = 10;
+        value2 = 10;
     }
 }

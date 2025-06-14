@@ -10,7 +10,7 @@ contract Parent {
 }
 
 contract ParentWithConstructor {
-    uint256 parent_value_2;
+    uint256 public parent_value_2;
 
     constructor() {
         parent_value_2 = 10;
