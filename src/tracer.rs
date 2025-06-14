@@ -201,14 +201,13 @@ fn generate_debug_units(
                             if contract_name == name {
                                 let state_variables = linearized_base_contracts
                                     .iter()
-                                    .map(|base_contract_id| {
+                                    .flat_map(|base_contract_id| {
                                         trace_context
                                             .contract_state_variables
                                             .get(base_contract_id)
                                             .unwrap()
                                     })
-                                    .flatten()
-                                    .map(|&x| x)
+                                    .copied()
                                     .collect::<Vec<_>>();
 
                                 let mut visitor = StatementVisitor::new(
@@ -870,7 +869,7 @@ impl DebugUnit {
             // we track other state variables in this other place
             // TODO: deprecate the previous one. I am still unsure if we still need it, I will keep it
             // until there are more unit tests.
-            vars_in_scope.extend(self.state_variables.iter().map(|v| *v));
+            vars_in_scope.extend(self.state_variables.iter().copied());
 
             // add variables from the function parameters
             for func in func.parameters.iter() {
