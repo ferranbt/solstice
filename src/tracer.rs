@@ -1,3 +1,4 @@
+use crate::graph::Graph;
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
@@ -6,7 +7,9 @@ use foundry_compilers::artifacts::sourcemap::SourceElement;
 use foundry_compilers::artifacts::sourcemap::{parse, SourceMap};
 use foundry_compilers::artifacts::CompactBytecode;
 use foundry_compilers::artifacts::ConfigurableContractArtifact;
+use foundry_compilers::cache::CompilerCache;
 use foundry_compilers::resolver::parse::SolData;
+use foundry_compilers::solc::SolcSettings;
 use foundry_compilers::ProjectPathsConfig;
 use revm_inspectors::tracing::types::CallTraceStep;
 use serde::Deserialize;
@@ -20,6 +23,22 @@ use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
+
+pub struct TraceContext {
+    contract_state_variables: HashMap<usize, Vec<usize>>,
+    structs: HashMap<usize, Node>,
+    state_variables: HashMap<usize, Variable>,
+}
+
+impl TraceContext {
+    fn new() -> Self {
+        Self {
+            contract_state_variables: HashMap::new(),
+            structs: HashMap::new(),
+            state_variables: HashMap::new(),
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct DebuggerContext {
@@ -55,130 +74,168 @@ pub struct ContractsDump {
     pub identified_contracts: HashMap<Address, String>,
 }
 
+fn load_artifact(
+    file_path: &Path,
+) -> Result<ConfigurableContractArtifact, Box<dyn std::error::Error>> {
+    let content = fs::read_to_string(file_path)?;
+    let artifact = serde_json::from_str::<ConfigurableContractArtifact>(&content)?;
+
+    Ok(artifact)
+}
+
 fn generate_debug_units(
     root_path: &Path,
     contracts_involved: Option<&HashSet<String>>,
-) -> Result<HashMap<String, DebugUnit>, Box<dyn std::error::Error>> {
+) -> Result<(HashMap<String, DebugUnit>, TraceContext), Box<dyn std::error::Error>> {
     let config: ProjectPathsConfig<SolData> =
         ProjectPathsConfig::dapptools(Path::new(root_path)).unwrap();
-    let artifacts = load_artifacts(&config.artifacts).unwrap();
 
+    let cache = CompilerCache::<SolcSettings>::read(&config.cache).unwrap();
+
+    let mut trace_context = TraceContext::new();
+
+    // create a graph with the cache to perform topological sort
+    let mut graph = Graph::new();
+    for cache_entry in cache.entries() {
+        let path_buf: PathBuf = cache_entry.source_name.clone();
+        let path_buf_index = graph.add_node(path_buf);
+
+        for import in cache_entry.imports.clone() {
+            let import_index = graph.add_node(import.clone());
+            graph.add_edge(import_index, path_buf_index);
+        }
+    }
+
+    let topological_sort = graph.topological_sort().expect("there should be something");
     let mut debug_unit = HashMap::new();
 
-    for (file_path, artifact) in artifacts {
-        if let Some(ast) = artifact.ast.clone() {
-            let absolute_path = ast.absolute_path;
+    for local_file_path in topological_sort {
+        let cache_entry = cache.files.get(&local_file_path).unwrap();
+        let source_name = cache_entry.source_name.clone();
 
-            // check if the absolute_path starts with 'lib/'
-            // for now skip all the libs since we cannot parse them yet
-            if absolute_path.starts_with("lib/") {
-                continue;
-            }
+        let source = fs::read_to_string(root_path.join(source_name.clone())).unwrap();
 
-            // Extract the compilation target contract name from the artifact path.
-            // Each JSON artifact represents one compilation target, but the AST includes
-            // all contracts/nodes from the source file plus imported dependencies.
-            // The filename tells us which specific contract was the compilation target.
-            // IMPORTANT: Bytecode is only available for the compilation target contract.
-            // Attempting to decode other ContractDefinitions with a visitor will fail.
-            // e.g., "Parent.json" = Parent is the target with bytecode, but AST contains Parent + Child + imports
-            let name = file_path.file_name().unwrap().to_str().unwrap();
-            let name = name
-                .split('/')
-                .next_back()
-                .unwrap_or("")
-                .strip_suffix(".json")
-                .unwrap_or("");
+        for (_, mut artifact) in cache_entry.artifacts.clone() {
+            let (_, xx) = artifact.pop_first().expect("expect something here");
+            let cached_artifact = xx.get("default").expect("something here too");
 
-            if let Some(contracts_involved) = contracts_involved {
-                if !contracts_involved.contains(name) {
+            let absolute_path = config.artifacts.join(cached_artifact.path.clone());
+
+            // load the artifact now
+            let artifact = load_artifact(&absolute_path)?;
+
+            if let Some(ast) = artifact.ast.clone() {
+                // For all the contracts parse and extract struct references into TraceContext
+                // TODO: Merge this with the contract visitor.
+                ast.nodes
+                    .iter()
+                    .filter(|source_node| source_node.node_type == NodeType::ContractDefinition)
+                    .for_each(|contract_node| {
+                        let mut contract_state_variables = Vec::new();
+                        contract_node.nodes.iter().for_each(|node| {
+                            let node_id = node.id.unwrap();
+
+                            if node.node_type == NodeType::StructDefinition {
+                                trace_context.structs.insert(node_id, node.clone());
+                            } else if node.node_type == NodeType::VariableDeclaration {
+                                // not sure if I have to filter by stateVariable here
+                                let variable =
+                                    StatementVisitor::build_debug_variable(node).expect("variable");
+
+                                trace_context
+                                    .state_variables
+                                    .insert(node_id, variable.unwrap());
+                                contract_state_variables.push(node_id);
+                            }
+                        });
+
+                        trace_context
+                            .contract_state_variables
+                            .insert(contract_node.id.unwrap(), contract_state_variables);
+                    });
+
+                // check if the absolute_path starts with 'lib/'
+                // for now skip all the libs since we cannot parse them yet
+                if local_file_path.starts_with("lib/") {
                     continue;
                 }
-            }
 
-            ast.nodes.iter().for_each(|node| {
-                let node = node.clone();
+                // Extract the compilation target contract name from the artifact path.
+                // Each JSON artifact represents one compilation target, but the AST includes
+                // all contracts/nodes from the source file plus imported dependencies.
+                // The filename tells us which specific contract was the compilation target.
+                // IMPORTANT: Bytecode is only available for the compilation target contract.
+                // Attempting to decode other ContractDefinitions with a visitor will fail.
+                // e.g., "Parent.json" = Parent is the target with bytecode, but AST contains Parent + Child + imports
+                let name = absolute_path.file_name().unwrap().to_str().unwrap();
+                let name = name
+                    .split('/')
+                    .next_back()
+                    .unwrap_or("")
+                    .strip_suffix(".json")
+                    .unwrap_or("");
 
-                if let Some(deployed_bytecode) = artifact.deployed_bytecode.as_ref() {
-                    let deployed_bytecode = deployed_bytecode.bytecode.as_ref().unwrap().clone();
-                    let bytecode = artifact.bytecode.as_ref().unwrap().clone();
-
-                    if node.node_type == NodeType::ContractDefinition {
-                        let contract_name = node.attribute::<String>("name").unwrap();
-
-                        if contract_name == name {
-                            let source =
-                                fs::read_to_string(root_path.join(absolute_path.clone())).unwrap();
-
-                            let mut visitor = StatementVisitor::new(
-                                deployed_bytecode,
-                                bytecode,
-                                root_path
-                                    .join(absolute_path.clone())
-                                    .to_string_lossy()
-                                    .to_string(),
-                                source,
-                            );
-                            visitor.visit_contract(&node.clone()).unwrap();
-
-                            // just so that we can keep the reference around
-                            let mut dd = visitor.debug_unit;
-                            dd.source_id = artifact.id.unwrap();
-
-                            debug_unit.insert(contract_name, dd);
-                        }
+                if let Some(contracts_involved) = contracts_involved {
+                    if !contracts_involved.contains(name) {
+                        continue;
                     }
                 }
-            });
-        } else {
-            println!("ast not found")
-        }
-    }
 
-    Ok(debug_unit)
-}
+                ast.nodes.iter().for_each(|node| {
+                    let node = node.clone();
+                    let source = source.clone();
 
-fn load_artifacts(
-    artifacts_path: &Path,
-) -> Result<Vec<(PathBuf, ConfigurableContractArtifact)>, Box<dyn std::error::Error>> {
-    let mut artifacts = Vec::new();
+                    if let Some(deployed_bytecode) = artifact.deployed_bytecode.as_ref() {
+                        let deployed_bytecode =
+                            deployed_bytecode.bytecode.as_ref().unwrap().clone();
+                        let bytecode = artifact.bytecode.as_ref().unwrap().clone();
 
-    // Read all directories in the artifacts path
-    for entry in fs::read_dir(artifacts_path)? {
-        let entry = entry?;
-        let path = entry.path();
+                        if node.node_type == NodeType::ContractDefinition {
+                            let contract_name = node.attribute::<String>("name").unwrap();
 
-        // if path is build-info, skip
-        if path.file_name().unwrap() == "build-info" {
-            continue;
-        }
+                            let mut linearized_base_contracts = node
+                                .attribute::<Vec<usize>>("linearizedBaseContracts")
+                                .unwrap();
+                            linearized_base_contracts.reverse();
 
-        // Check if it's a directory
-        if path.is_dir() {
-            // Look for .json files inside the directory
-            for file in fs::read_dir(&path)? {
-                let file = file?;
-                let file_path = file.path();
+                            if contract_name == name {
+                                let state_variables = linearized_base_contracts
+                                    .iter()
+                                    .map(|base_contract_id| {
+                                        trace_context
+                                            .contract_state_variables
+                                            .get(base_contract_id)
+                                            .unwrap()
+                                    })
+                                    .flatten()
+                                    .map(|&x| x)
+                                    .collect::<Vec<_>>();
 
-                // Check if it's a JSON file
-                if file_path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    // Read and parse the JSON file
-                    let content = fs::read_to_string(&file_path)?;
-                    match serde_json::from_str::<ConfigurableContractArtifact>(&content) {
-                        Ok(artifact) => {
-                            artifacts.push((file_path, artifact));
-                        }
-                        Err(e) => {
-                            println!("Failed to parse artifact at {:?}: {}", file_path, e);
-                            continue;
+                                let mut visitor = StatementVisitor::new(
+                                    deployed_bytecode,
+                                    bytecode,
+                                    source_name.clone().to_string_lossy().to_string(),
+                                    source,
+                                );
+                                visitor.visit_contract(&node.clone()).unwrap();
+
+                                // just so that we can keep the reference around
+                                let mut dd = visitor.debug_unit;
+                                dd.source_id = artifact.id.unwrap();
+                                dd.state_variables = state_variables;
+
+                                debug_unit.insert(contract_name, dd);
+                            }
                         }
                     }
-                }
+                });
+            } else {
+                println!("ast not found")
             }
         }
     }
 
-    Ok(artifacts)
+    Ok((debug_unit, trace_context))
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -281,6 +338,7 @@ impl StatementVisitor {
                 variables: Vec::new(),
                 bytecode: BytecodeMap::new(&bytecode),
                 deployed_bytecode: BytecodeMap::new(&deployed_bytecode),
+                state_variables: Vec::new(),
             },
         }
     }
@@ -307,14 +365,16 @@ impl StatementVisitor {
                         .insert(function.name.clone(), function);
                 }
                 NodeType::VariableDeclaration => {
+                    /*
                     let state_variable = node
                         .attribute::<bool>("stateVariable")
                         .ok_or_missing_attribute("stateVariable")?;
 
                     if state_variable {
-                        let var = self.build_debug_variable(node)?;
+                        let var = Self::build_debug_variable(node)?;
                         self.debug_unit.variables.push(var.unwrap());
                     }
+                    */
                 }
                 NodeType::StructDefinition => {}
                 NodeType::EventDefinition => {}
@@ -511,7 +571,7 @@ impl StatementVisitor {
                     }
                 }
                 NodeType::VariableDeclarationStatement => {
-                    let var = self.build_debug_variable(statement)?.expect("variable");
+                    let var = Self::build_debug_variable(statement)?.expect("variable");
                     self.debug_unit.variables.push(var.clone());
                     block.variables.push(var.id as usize);
 
@@ -616,14 +676,13 @@ impl StatementVisitor {
         Ok(())
     }
 
-    fn build_debug_variable(&self, node: &Node) -> StatementVisitorResult<Option<Variable>> {
+    fn build_debug_variable(node: &Node) -> StatementVisitorResult<Option<Variable>> {
         if let Some(name) = node.attribute("name") {
             // this is most likely a state variable
             if let Some(id) = node.id {
                 return Ok(Some(Variable {
                     name,
                     id: id as u64,
-                    location: self.source_location_for(&node.src),
                     state_variable: true,
                 }));
             }
@@ -642,7 +701,6 @@ impl StatementVisitor {
             return Ok(Some(Variable {
                 name,
                 id: node.id.unwrap() as u64,
-                location: self.source_location_for(&node.src),
                 state_variable: false,
             }));
         }
@@ -675,7 +733,7 @@ impl StatementVisitor {
                 ));
             }
 
-            if let Some(var) = self.build_debug_variable(&param)? {
+            if let Some(var) = Self::build_debug_variable(&param)? {
                 let mut var = var.clone();
                 var.state_variable = false;
 
@@ -808,6 +866,11 @@ impl DebugUnit {
                 .filter(|v| v.state_variable)
                 .map(|v| v.id as usize)
                 .collect();
+
+            // we track other state variables in this other place
+            // TODO: deprecate the previous one. I am still unsure if we still need it, I will keep it
+            // until there are more unit tests.
+            vars_in_scope.extend(self.state_variables.iter().map(|v| *v));
 
             // add variables from the function parameters
             for func in func.parameters.iter() {
@@ -946,7 +1009,10 @@ struct OtherMatchLocation {
     vars_in_scope: Vec<usize>,
 }
 
-pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTrace, TraceError> {
+pub fn generate_trace(
+    workspace_path: &str,
+    trace_path: &str,
+) -> Result<(DebugTrace, TraceContext), TraceError> {
     let content = fs::read_to_string(trace_path)
         .map_err(|e| TraceError::FailedToReadFile(trace_path.to_string(), e))?;
 
@@ -954,7 +1020,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
         .map_err(|e| TraceError::FailedToParseDebugDump(trace_path.to_string(), e))?;
 
     let root_path = Path::new(workspace_path);
-    let debug_units = generate_debug_units(root_path, None).unwrap();
+    let (debug_units, trace_context) = generate_debug_units(root_path, None).unwrap();
 
     // map each contract to its current storage
     let mut contracts_storage = HashMap::new();
@@ -1180,16 +1246,23 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
         }
     }
 
-    Ok(DebugTrace {
-        steps,
-        variables: variable_definitions,
-    })
+    Ok((
+        DebugTrace {
+            steps,
+            variables: variable_definitions,
+        },
+        trace_context,
+    ))
 }
 
 #[derive(Debug, Clone)]
 pub struct DebugUnit {
     pub path: String,
     pub functions: HashMap<String, Function>,
+    // list of state variables in this contract, they are stored in a
+    // different place in the trace context
+    pub state_variables: Vec<usize>,
+    // list of all the variables in this contract
     pub variables: Vec<Variable>,
     pub source_id: u32,
     pub bytecode: BytecodeMap,
@@ -1241,7 +1314,6 @@ pub struct Block {
 pub struct Variable {
     pub name: String,
     pub id: u64,
-    pub location: SourceLocation,
     pub state_variable: bool,
 }
 
@@ -1422,7 +1494,11 @@ mod tests {
     }
 
     impl DebugTrace {
-        pub fn to_debug_format(&self, workspace_path: &str) -> String {
+        pub fn to_debug_format(
+            &self,
+            workspace_path: &str,
+            debug_context: &TraceContext,
+        ) -> String {
             let mut output = String::new();
 
             for (_i, step) in self.steps.iter().enumerate() {
@@ -1464,8 +1540,22 @@ mod tests {
                         let vars_in_scope: Vec<String> = step
                             .variables_in_scope
                             .iter()
-                            .map(|&id| self.variables.get(&(id as u64)).unwrap())
-                            .map(|var| var.name.clone())
+                            .filter_map(|&id| {
+                                // Try to find the variable first in the local debug context and then in
+                                // the general one that stores the state variables
+                                let var = if let Some(var) = self.variables.get(&(id as u64)) {
+                                    var
+                                } else {
+                                    debug_context.state_variables.get(&id).unwrap()
+                                };
+
+                                let name = var.name.clone();
+                                if SKIP_TRACE_LIST.contains(&name.as_str()) {
+                                    None
+                                } else {
+                                    Some(name)
+                                }
+                            })
                             .collect();
 
                         writeln!(
@@ -1627,7 +1717,8 @@ mod tests {
             );
             let _ = execute_command(workspace_path, forge).unwrap();
 
-            let debug_trace = generate_trace(workspace_path, debug_trace_path.as_str()).unwrap();
+            let (debug_trace, trace_context) =
+                generate_trace(workspace_path, debug_trace_path.as_str()).unwrap();
 
             // save the debug trace
             let debug_trace_json = serde_json::to_string(&debug_trace).unwrap();
@@ -1636,7 +1727,7 @@ mod tests {
                 debug_trace_json,
             )?;
 
-            let formatted = debug_trace.to_debug_format(workspace_path);
+            let formatted = debug_trace.to_debug_format(workspace_path, &trace_context);
             std::fs::write(
                 format!("{}/debug_trace.txt", log_output_dir),
                 formatted.clone(),
@@ -1652,4 +1743,49 @@ mod tests {
 
         Ok(())
     }
+
+    const SKIP_TRACE_LIST: &[&str] = &[
+        "VM_ADDRESS",
+        "CONSOLE",
+        "CREATE2_FACTORY",
+        "DEFAULT_SENDER",
+        "DEFAULT_TEST_CONTRACT",
+        "MULTICALL3_ADDRESS",
+        "SECP256K1_ORDER",
+        "UINT256_MAX",
+        "vm",
+        "stdstore",
+        "vm",
+        "_failed",
+        "vm",
+        "stdChainsInitialized",
+        "chains",
+        "defaultRpcUrls",
+        "idToAlias",
+        "fallbackToDefaultRpcUrls",
+        "vm",
+        "UINT256*MAX",
+        "gasMeteringOff",
+        "stdstore",
+        "vm",
+        "CONSOLE2_ADDRESS",
+        "_excludedContracts",
+        "_excludedSenders",
+        "_targetedContracts",
+        "_targetedSenders",
+        "_excludedArtifacts",
+        "_targetedArtifacts",
+        "_targetedArtifactSelectors",
+        "_excludedSelectors",
+        "_targetedSelectors",
+        "_targetedInterfaces",
+        "multicall",
+        "vm",
+        "CONSOLE2_ADDRESS",
+        "INT256_MIN_ABS",
+        "SECP256K1_ORDER",
+        "UINT256_MAX",
+        "CREATE2_FACTORY",
+        "IS_TEST",
+    ];
 }

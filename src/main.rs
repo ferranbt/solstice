@@ -35,6 +35,7 @@ pub mod built_info {
 mod builder;
 mod dap;
 mod debugger;
+mod graph;
 #[cfg(test)]
 mod state;
 mod tracer;
@@ -711,7 +712,7 @@ fn run_dap_server(workspace_path: &str) -> u64 {
         let input = BufReader::new(stream.try_clone().unwrap());
         let output = BufWriter::new(stream);
 
-        let debug_trace = generate_trace(&workspace_path, "/tmp/debug_trace.json").unwrap();
+        let (debug_trace, _) = generate_trace(&workspace_path, "/tmp/debug_trace.json").unwrap();
 
         let mut server = DapServer::new(input, output);
         server.serve(|client| DapDebugger::new(client, debug_trace));
