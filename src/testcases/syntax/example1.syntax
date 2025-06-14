@@ -1,6 +1,5 @@
 (contract
   (state-vars
-    value
   )
   (function constructor
     (params val)
