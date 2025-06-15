@@ -43,6 +43,7 @@
   (function with_try_statement
     (params )
     (block
+      (stmt 870:281)
       (block
         (block
           (stmt 930:9)
