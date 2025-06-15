@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
+contract Parent {
+    constructor() {
+    }
+
+    function call() external {
+    }
+}
+
 contract Example {
     uint256 value;
 
@@ -32,5 +40,18 @@ contract Example {
 
     function simple_with_modifier() public simpleModifier {
         value = 5;
+    }
+
+    function with_try_statement() public {
+        try new Parent() returns (Parent newContract) {
+            value = 1;
+        } catch Error(string memory reason) {
+            value = 2;
+        } catch Panic(uint errorCode) {
+            value = 3;
+        } catch (bytes memory lowLevelData) {
+            value = 4;
+        }
+
     }
 }

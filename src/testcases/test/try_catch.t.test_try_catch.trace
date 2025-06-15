@@ -1,0 +1,31 @@
+[FUNC] test_try_catch (test/try_catch.t.sol:11)
+[CALL] 12:8
+[FUNC] constructor (src/try_catch.sol:5)
+[STMT] 12:8 scope=[cc, result]
+[CALL] 13:8
+[FUNC] try_fail (test/try_catch.t.sol:20)
+  [CALL] 21:8
+  [FUNC] fail (src/try_catch.sol:8)
+    [STMT] 9:12 scope=[val]
+    [STMT] 32:8 scope=[val]
+  [CALL] 21:8
+  [STMT] 22:12 scope=[cc, result, value, returnValue]
+[CALL] 14:8
+[FUNC] try_fail (test/try_catch.t.sol:20)
+  [CALL] 21:8
+  [FUNC] fail (src/try_catch.sol:8)
+    [STMT] 9:12 scope=[val]
+  [STMT] 24:12 scope=[cc, result, value, reason]
+[CALL] 15:8
+[FUNC] try_fail (test/try_catch.t.sol:20)
+  [CALL] 21:8
+  [FUNC] fail (src/try_catch.sol:8)
+    [STMT] 9:12 scope=[val]
+  [STMT] 26:12 scope=[cc, result, value, errorCode]
+[CALL] 16:8
+[FUNC] try_fail (test/try_catch.t.sol:20)
+  [CALL] 21:8
+  [FUNC] fail (src/try_catch.sol:8)
+    [STMT] 9:12 scope=[val]
+  [STMT] 28:12 scope=[cc, result, value]
+[STMT] 17:8 scope=[cc, result]
