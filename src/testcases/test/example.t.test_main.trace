@@ -2,7 +2,7 @@
 [STMT] 20:8 scope=[value]
 [CALL] 11:8
 [FUNC] constructor (src/example1.sol:17)
-  [STMT] 18:8 scope=[parent_value, parent_value_2, value]
+  [STMT] 18:8 scope=[parent_value, value, parent_value_2]
 [STMT] 11:8 scope=[value, example]
 [CALL] 12:8
 [FUNC] simple_call (test/example.t.sol:15)

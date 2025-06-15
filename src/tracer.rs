@@ -1142,7 +1142,11 @@ pub fn generate_trace(
                 };
 
             for debug_unit_to_test in debug_units_to_test.iter() {
-                if let (Some(loc), vars) = debug_unit_to_test.match_location(source_location) {
+                if let (Some(loc), mut vars) = debug_unit_to_test.match_location(source_location) {
+                    // TODO: We are still tracking some duplicated ids
+                    vars.sort();
+                    vars.dedup();
+
                     matched_locations.push(OtherMatchLocation {
                         match_result: loc,
                         source_location: source_location.clone(),
