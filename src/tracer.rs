@@ -594,6 +594,50 @@ impl StatementVisitor {
                         )?;
                     }
                 }
+                NodeType::TryStatement => {
+                    let clauses = statement
+                        .attribute::<Vec<Node>>("clauses")
+                        .unwrap_or_default();
+
+                    let external_call = statement
+                        .attribute::<Node>("externalCall")
+                        .ok_or_missing_attribute("externalCall")?;
+
+                    let block_location = self.source_location_for(&statement.src);
+
+                    self.process_expression_for_function_calls(
+                        &external_call,
+                        &mut block,
+                        &block_location,
+                    )?;
+
+                    let mut catch_blocks = Vec::new();
+                    for clause in clauses {
+                        let block = clause
+                            .attribute::<Node>("block")
+                            .ok_or_missing_attribute("block")?;
+
+                        let params = if clause.attribute::<Node>("parameters").is_some() {
+                            self.build_debug_parameters(&clause)?
+                        } else {
+                            Vec::new()
+                        };
+                        let variables = params.iter().map(|var| var.id as usize).collect();
+
+                        let mut block = self.build_debug_block(&block)?;
+                        block.variables = variables;
+
+                        catch_blocks.push(block);
+                    }
+
+                    block.scopes.push(Block {
+                        variables: Vec::new(),
+                        condition: None,
+                        instructions: Vec::new(),
+                        scopes: catch_blocks,
+                        location: block_location,
+                    });
+                }
                 _ => {
                     // Regular statement
                     block.instructions.push(Instruction {
@@ -830,6 +874,10 @@ impl DebugUnit {
         ) -> (Option<MatchResult>, Vec<usize>) {
             let mut vars_in_scope = parent_vars.clone();
 
+            // add the variables from the block itself, for example, variable declared in a
+            // try statement.
+            vars_in_scope.extend(block.variables.iter().copied());
+
             for inst in &block.instructions {
                 if let InstructionKind::VariableDeclaration(id) = inst.kind {
                     vars_in_scope.push(id);
@@ -992,13 +1040,15 @@ pub enum TraceError {
     #[error("Last step should have call trace equal to 0")]
     LastStepShouldHaveCallTraceEqualZero,
 
-    #[error("Function with incorrect exit pc: {0} {1}")]
+    #[error("Function with incorrect exit pc: found {0} expected {1}")]
     FunctionWithIncorrectExitPc(String, String),
 }
 
 fn source_element_matches(a: &SourceElement, b: &SourceElement) -> bool {
     a.offset() == b.offset() && a.length() == b.length() && a.index_i32() == b.index_i32()
 }
+
+pub const REVERT: u8 = 0xfd;
 
 #[derive(Debug, Clone)]
 struct OtherMatchLocation {
@@ -1103,7 +1153,11 @@ pub fn generate_trace(
             }
         }
 
-        if node.kind.is_create() {
+        // check the last item from the steps
+        let last = node.steps.last().unwrap();
+        let did_revert = last.op.get() == REVERT;
+
+        if node.kind.is_create() || did_revert {
             // we have to put a new "fake" instruction to signal that we got out of the constructor because
             // the way the constructor is laid out in the srcmap/pc is srcmap of the contract call
             // and then srcmap of internal elements but not a srcmap for the out call for this contract
@@ -1149,7 +1203,7 @@ pub fn generate_trace(
             }
             MatchResult::Instruction(inst) => {
                 if matches!(inst.kind, InstructionKind::FunctionCall) {
-                    // for function calls we must have a function with in, because whena  function call happens
+                    // for function calls we must have a function with in, because when a function call happens
                     // you have some sourcemap pc pointer when it returns that we do not need, so in order to filter that, we keep the chunk
                     // with the in
                     let does_have_in = chunk.iter().find(|i| i.source_location.jump() == Jump::In);
@@ -1623,6 +1677,7 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     struct TraceTestCase {
         pub test_path: String,
         pub expected_path: PathBuf,
@@ -1652,10 +1707,19 @@ mod tests {
         let mut trace_test_cases = Vec::new();
 
         test_cases.iter().for_each(|test_path| {
+            let test_path_no_ext_str = test_path.with_extension("").to_string_lossy().to_string();
+
             let trace_files = fs::read_dir(test_path.parent().unwrap())
                 .unwrap()
                 .filter_map(|entry| {
+                    // Only keep the files which have the same prefix as 'test_path_no_ext'
                     let path = entry.unwrap().path();
+
+                    let path_str = path.to_string_lossy().to_string();
+                    if !path_str.starts_with(test_path_no_ext_str.clone().as_str()) {
+                        return None;
+                    }
+
                     if path.is_file() && path.extension().unwrap() == "trace" {
                         let trace_name = path.to_string_lossy().to_string();
                         let trace_name = trace_name.split('.').nth_back(1).unwrap();
@@ -1715,7 +1779,6 @@ mod tests {
                 debug_trace_path.as_str(),
             );
             let _ = execute_command(workspace_path, forge).unwrap();
-
             let (debug_trace, trace_context) =
                 generate_trace(workspace_path, debug_trace_path.as_str()).unwrap();
 
