@@ -1751,7 +1751,6 @@ mod tests {
         DefaultFrame, GethDebugTracingOptions, GethDefaultTracingOptions,
     };
     use alloy_sol_types::sol;
-    use alloy_transport::BoxTransport;
     use arbitrary::Unstructured;
     use thiserror::Error;
 
@@ -1763,9 +1762,7 @@ mod tests {
             >,
             WalletFiller<EthereumWallet>,
         >,
-        alloy_provider::layers::AnvilProvider<RootProvider<BoxTransport>, BoxTransport>,
-        BoxTransport,
-        Ethereum,
+        alloy_provider::layers::AnvilProvider<RootProvider<Ethereum>, Ethereum>,
     >;
 
     sol! {
@@ -1934,12 +1931,11 @@ mod tests {
             "array out-of-bounds",
         ];
 
-        fn new() -> Self {
+        fn new() -> eyre::Result<Self> {
             let provider = ProviderBuilder::new()
-                .with_recommended_fillers()
-                .on_anvil_with_wallet_and_config(|anvil| anvil.arg("--steps-tracing"));
+                .connect_anvil_with_wallet_and_config(|anvil| anvil.arg("--steps-tracing"))?;
 
-            TestHarness { provider: provider }
+            Ok(TestHarness { provider: provider })
         }
 
         fn is_recoverable_error(err: &str) -> bool {
@@ -2010,8 +2006,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_storage_fuzz() {
-        let harness = TestHarness::new();
+    async fn test_storage_fuzz() -> eyre::Result<()> {
+        let harness = TestHarness::new()?;
 
         let num = var("NUM_TESTS")
             .ok()
@@ -2039,10 +2035,12 @@ mod tests {
             let result = result.retrieve_storage();
             assert_eq!(result, artifact.values);
         }
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_storage_types() {
+    async fn test_storage_types() -> eyre::Result<()> {
         let typ = TypeTuple {
             types: vec![
                 ("arg_0".to_string(), Type::String),
@@ -2133,16 +2131,18 @@ mod tests {
         let mut u = Unstructured::new(&data);
         let artifact = ContractGenerator::build_storage(Type::Tuple(typ), &mut u);
 
-        let harness = TestHarness::new();
-        let result = harness.deploy(&artifact.source).await.unwrap();
+        let harness = TestHarness::new()?;
+        let result = harness.deploy(&artifact.source).await?;
 
         let values = result.retrieve_storage();
         assert_eq!(values, artifact.values);
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_memory_fuzz() {
-        let harness = TestHarness::new();
+    async fn test_memory_fuzz() -> eyre::Result<()> {
+        let harness = TestHarness::new()?;
 
         let num = var("NUM_TESTS")
             .ok()
@@ -2172,11 +2172,13 @@ mod tests {
             let result = result.retrieve_memory();
             assert_eq!(result, artifact.values);
         }
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_stack_fuzz() {
-        let harness = TestHarness::new();
+    async fn test_stack_fuzz() -> eyre::Result<()> {
+        let harness = TestHarness::new()?;
 
         let num = var("NUM_TESTS")
             .ok()
@@ -2209,5 +2211,7 @@ mod tests {
 
             // assert_eq!(result, artifact.values);
         }
+
+        Ok(())
     }
 }
