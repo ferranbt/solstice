@@ -2,5 +2,5 @@
 [CALL] 38:8
 [FUNC] constructor (src/example1.sol:41)
   [STMT] 16:8 scope=[parent_value_2]
-  [STMT] 42:8 scope=[parent_value_2, value2]
+  [STMT] 42:8 scope=[value2, parent_value_2]
 [STMT] 38:8 scope=[value, example]
