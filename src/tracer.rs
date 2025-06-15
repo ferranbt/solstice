@@ -1623,6 +1623,7 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     struct TraceTestCase {
         pub test_path: String,
         pub expected_path: PathBuf,
@@ -1652,10 +1653,19 @@ mod tests {
         let mut trace_test_cases = Vec::new();
 
         test_cases.iter().for_each(|test_path| {
+            let test_path_no_ext_str = test_path.with_extension("").to_string_lossy().to_string();
+
             let trace_files = fs::read_dir(test_path.parent().unwrap())
                 .unwrap()
                 .filter_map(|entry| {
+                    // Only keep the files which have the same prefix as 'test_path_no_ext'
                     let path = entry.unwrap().path();
+
+                    let path_str = path.to_string_lossy().to_string();
+                    if !path_str.starts_with(test_path_no_ext_str.clone().as_str()) {
+                        return None;
+                    }
+
                     if path.is_file() && path.extension().unwrap() == "trace" {
                         let trace_name = path.to_string_lossy().to_string();
                         let trace_name = trace_name.split('.').nth_back(1).unwrap();
@@ -1715,7 +1725,6 @@ mod tests {
                 debug_trace_path.as_str(),
             );
             let _ = execute_command(workspace_path, forge).unwrap();
-
             let (debug_trace, trace_context) =
                 generate_trace(workspace_path, debug_trace_path.as_str()).unwrap();
 
