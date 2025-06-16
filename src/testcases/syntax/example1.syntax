@@ -1,30 +1,63 @@
 (contract
   (state-vars
-    value
   )
-  (function
+  (function constructor
     (params val)
     (block
-      (stmt 143:11)
+      (stmt 228:11)
     )
   )
   (function main
     (params )
     (block
       (block
-        (stmt 230:14)
-        (stmt 230:14)
+        (stmt 315:14)
+        (stmt 315:14)
       )
       (block
-        (stmt 368:23)
-        (stmt 368:23)
+        (stmt 453:23)
+        (stmt 453:23)
       )
+    )
+  )
+  (function simpleModifier
+    (params )
+    (block
+      (stmt 636:50)
+      (stmt 696:1)
+      (stmt 707:17)
     )
   )
   (function simple_call
     (params val)
     (block
-      (stmt 488:14)
+      (stmt 573:14)
+    )
+  )
+  (function simple_with_modifier
+    (params )
+    (block
+      (stmt 801:9)
+    )
+  )
+  (function with_try_statement
+    (params )
+    (block
+      (stmt 870:281)
+      (block
+        (block
+          (stmt 930:9)
+        )
+        (block
+          (stmt 999:9)
+        )
+        (block
+          (stmt 1062:9)
+        )
+        (block
+          (stmt 1131:9)
+        )
+      )
     )
   )
 )

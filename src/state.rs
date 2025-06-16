@@ -294,7 +294,7 @@ contract ComplexTypes {{
     {}
     {}
 
-    function setup() public {{
+    function start() public {{
         {}
     }}
 }}
@@ -616,7 +616,7 @@ pragma solidity ^0.8.0;
 contract ComplexTypes {{
     {}
 
-    function setup() public {{
+    function start() public {{
 {}
     }}
 }}
@@ -730,7 +730,7 @@ contract ComplexTypes {{
 pragma solidity ^0.8.0;
 
 contract ComplexTypes {{
-    function setup() public {{
+    function start() public {{
         // Stack variables declarations
 {}
         // Stack variables assignments
@@ -1712,13 +1712,12 @@ mod tests {
     };
     use alloy_provider::network::{Ethereum, EthereumWallet, TransactionBuilder};
     use alloy_provider::{ext::DebugApi, Provider, ProviderBuilder};
-    use alloy_provider::{Identity, RootProvider};
+    use alloy_provider::{Identity, RootProvider, WalletProvider};
     use alloy_rpc_types::TransactionRequest;
     use alloy_rpc_types_trace::geth::{
         DefaultFrame, GethDebugTracingOptions, GethDefaultTracingOptions,
     };
     use alloy_sol_types::sol;
-    use alloy_transport::BoxTransport;
     use arbitrary::Unstructured;
     use thiserror::Error;
 
@@ -1730,16 +1729,14 @@ mod tests {
             >,
             WalletFiller<EthereumWallet>,
         >,
-        alloy_provider::layers::AnvilProvider<RootProvider<BoxTransport>, BoxTransport>,
-        BoxTransport,
-        Ethereum,
+        alloy_provider::layers::AnvilProvider<RootProvider<Ethereum>, Ethereum>,
     >;
 
     sol! {
         #[allow(missing_docs)]
         #[sol(rpc)]
         contract Example1 {
-            function setup() public {}
+            function start() public {}
         }
     }
 
@@ -1894,6 +1891,8 @@ mod tests {
         FatalError(String),
     }
 
+    const DEFAULT_NUM_FUZZ_TESTS: usize = 100;
+
     impl TestHarness {
         const RECOVERABLE_ERRORS: &'static [&'static str] = &[
             "max initcode size exceeded",
@@ -1901,12 +1900,11 @@ mod tests {
             "array out-of-bounds",
         ];
 
-        fn new() -> Self {
+        fn new() -> eyre::Result<Self> {
             let provider = ProviderBuilder::new()
-                .with_recommended_fillers()
-                .on_anvil_with_wallet_and_config(|anvil| anvil.arg("--steps-tracing"));
+                .connect_anvil_with_wallet_and_config(|anvil| anvil.arg("--steps-tracing"))?;
 
-            TestHarness { provider: provider }
+            Ok(TestHarness { provider: provider })
         }
 
         fn is_recoverable_error(err: &str) -> bool {
@@ -1917,10 +1915,21 @@ mod tests {
             let provider = self.provider.clone();
             let contract_artifact = compile_contract(&source).unwrap();
 
+            let signer_address = provider.default_signer_address();
+
             println!("source {}", source);
 
-            // Deploy the `Counter` contract from bytecode at runtime.
-            let tx = TransactionRequest::default().with_deploy_code(contract_artifact.bytecode());
+            // After updating to the latest version of alloy I cannot use the recommended filters
+            // to set the nonce, they return incorrect values, so doing it manually for now.
+            let nonce = provider
+                .get_transaction_count(signer_address)
+                .pending()
+                .await
+                .unwrap();
+
+            let tx = TransactionRequest::default()
+                .nonce(nonce)
+                .with_deploy_code(contract_artifact.bytecode());
 
             // Deploy the contract.
             let deploy_pending_tx = match provider.send_transaction(tx).await {
@@ -1939,12 +1948,13 @@ mod tests {
             let contract_address = receipt.contract_address.unwrap();
 
             let contract = Example1::new(contract_address, &provider);
-            let builder = contract.setup();
+            let builder_tx = contract.start().into_transaction_request().nonce(nonce + 1);
 
-            let pending_tx = match builder.send().await {
+            let pending_tx = match provider.send_transaction(builder_tx).await {
                 Ok(pending_tx) => pending_tx,
                 Err(err) => {
                     let err_str = err.to_string();
+
                     return if Self::is_recoverable_error(&err_str) {
                         Err(DeployError::RecoverableError(err_str))
                     } else {
@@ -1977,13 +1987,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_storage_fuzz() {
-        let harness = TestHarness::new();
+    async fn test_storage_fuzz() -> eyre::Result<()> {
+        let harness = TestHarness::new()?;
 
         let num = var("NUM_TESTS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(1000);
+            .unwrap_or(DEFAULT_NUM_FUZZ_TESTS);
 
         for i in 0..num {
             println!("generting {} {}", i, num);
@@ -2006,10 +2016,12 @@ mod tests {
             let result = result.retrieve_storage();
             assert_eq!(result, artifact.values);
         }
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_storage_types() {
+    async fn test_storage_types() -> eyre::Result<()> {
         let typ = TypeTuple {
             types: vec![
                 ("arg_0".to_string(), Type::String),
@@ -2100,21 +2112,23 @@ mod tests {
         let mut u = Unstructured::new(&data);
         let artifact = ContractGenerator::build_storage(Type::Tuple(typ), &mut u);
 
-        let harness = TestHarness::new();
-        let result = harness.deploy(&artifact.source).await.unwrap();
+        let harness = TestHarness::new()?;
+        let result = harness.deploy(&artifact.source).await?;
 
         let values = result.retrieve_storage();
         assert_eq!(values, artifact.values);
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_memory_fuzz() {
-        let harness = TestHarness::new();
+    async fn test_memory_fuzz() -> eyre::Result<()> {
+        let harness = TestHarness::new()?;
 
         let num = var("NUM_TESTS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(1000);
+            .unwrap_or(DEFAULT_NUM_FUZZ_TESTS);
 
         for i in 0..num {
             println!("generting {} {}", i, num);
@@ -2139,16 +2153,18 @@ mod tests {
             let result = result.retrieve_memory();
             assert_eq!(result, artifact.values);
         }
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_stack_fuzz() {
-        let harness = TestHarness::new();
+    async fn test_stack_fuzz() -> eyre::Result<()> {
+        let harness = TestHarness::new()?;
 
         let num = var("NUM_TESTS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(1000);
+            .unwrap_or(DEFAULT_NUM_FUZZ_TESTS);
 
         for i in 0..num {
             println!("generating {} {}", i, num);
@@ -2176,5 +2192,7 @@ mod tests {
 
             // assert_eq!(result, artifact.values);
         }
+
+        Ok(())
     }
 }

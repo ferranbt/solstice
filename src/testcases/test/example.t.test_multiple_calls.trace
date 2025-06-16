@@ -1,0 +1,17 @@
+[FUNC] test_multiple_calls (test/example.t.sol:25)
+[STMT] 26:28 scope=[value]
+[CALL] 27:12
+[FUNC] simple_call (test/example.t.sol:15)
+  [STMT] 16:8 scope=[value, val]
+[STMT] 27:12 scope=[value]
+[STMT] 26:28 scope=[value]
+[CALL] 27:12
+[FUNC] simple_call (test/example.t.sol:15)
+  [STMT] 16:8 scope=[value, val]
+[STMT] 27:12 scope=[value]
+[STMT] 26:28 scope=[value]
+[CALL] 27:12
+[FUNC] simple_call (test/example.t.sol:15)
+  [STMT] 16:8 scope=[value, val]
+[STMT] 27:12 scope=[value]
+[STMT] 26:28 scope=[value]

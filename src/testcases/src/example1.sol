@@ -1,7 +1,17 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
-contract Example {
+import {Parent, ParentWithConstructor} from "./parent.sol";
+
+contract ExampleParent {
+    uint256 parent_value;
+
+    function set_parent_value(uint256 new_parent_value) public {
+        parent_value = new_parent_value;
+    } 
+}
+
+contract Example is ExampleParent, Parent {
     uint256 value;
 
     constructor() {
@@ -22,5 +32,13 @@ contract Example {
 
     function simple_call() public pure returns (uint256) {
         return 1;
+    }
+}
+
+contract ExampleTwoParents is ParentWithConstructor {
+    uint256 value2;
+
+    constructor() ParentWithConstructor() {
+        value2 = 10;
     }
 }

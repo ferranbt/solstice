@@ -1,15 +1,20 @@
+use crate::graph::Graph;
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
 use foundry_compilers::artifacts::sourcemap::Jump;
+use foundry_compilers::artifacts::sourcemap::SourceElement;
 use foundry_compilers::artifacts::sourcemap::{parse, SourceMap};
 use foundry_compilers::artifacts::CompactBytecode;
 use foundry_compilers::artifacts::ConfigurableContractArtifact;
+use foundry_compilers::cache::CompilerCache;
 use foundry_compilers::resolver::parse::SolData;
+use foundry_compilers::solc::SolcSettings;
 use foundry_compilers::ProjectPathsConfig;
 use revm_inspectors::tracing::types::CallTraceStep;
 use serde::Deserialize;
 use serde::Serialize;
+use slice_group_by::GroupBy;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -19,6 +24,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
 
+pub struct TraceContext {
+    contract_state_variables: HashMap<usize, Vec<usize>>,
+    structs: HashMap<usize, Node>,
+    state_variables: HashMap<usize, Variable>,
+}
+
+impl TraceContext {
+    fn new() -> Self {
+        Self {
+            contract_state_variables: HashMap::new(),
+            structs: HashMap::new(),
+            state_variables: HashMap::new(),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct DebuggerContext {
     pub debug_arena: Vec<DebugNode>,
@@ -26,8 +47,25 @@ struct DebuggerContext {
 }
 
 #[derive(Deserialize)]
+pub enum DebugNodeKind {
+    #[serde(rename = "CALL")]
+    Call,
+    #[serde(rename = "CREATE")]
+    Create,
+    #[serde(rename = "STATICCALL")]
+    StaticCall,
+}
+
+impl DebugNodeKind {
+    fn is_create(&self) -> bool {
+        matches!(self, DebugNodeKind::Create)
+    }
+}
+
+#[derive(Deserialize)]
 pub struct DebugNode {
-    // pub kind: String,
+    pub kind: DebugNodeKind,
+    pub address: Address,
     pub steps: Vec<CallTraceStep>,
 }
 
@@ -36,103 +74,167 @@ pub struct ContractsDump {
     pub identified_contracts: HashMap<Address, String>,
 }
 
+fn load_artifact(
+    file_path: &Path,
+) -> Result<ConfigurableContractArtifact, Box<dyn std::error::Error>> {
+    let content = fs::read_to_string(file_path)?;
+    let artifact = serde_json::from_str::<ConfigurableContractArtifact>(&content)?;
+
+    Ok(artifact)
+}
+
 fn generate_debug_units(
     root_path: &Path,
     contracts_involved: Option<&HashSet<String>>,
-) -> Result<HashMap<String, DebugUnit>, Box<dyn std::error::Error>> {
+) -> Result<(HashMap<String, DebugUnit>, TraceContext), Box<dyn std::error::Error>> {
     let config: ProjectPathsConfig<SolData> =
         ProjectPathsConfig::dapptools(Path::new(root_path)).unwrap();
-    let artifacts = load_artifacts(&config.artifacts).unwrap();
 
-    let mut debug_unit = HashMap::new();
+    let cache = CompilerCache::<SolcSettings>::read(&config.cache).unwrap();
 
-    for (_file_path, artifact) in artifacts {
-        if let Some(ast) = artifact.ast.clone() {
-            let absolute_path = ast.absolute_path;
+    let mut trace_context = TraceContext::new();
 
-            ast.nodes.iter().for_each(|node| {
-                let node = node.clone();
+    // create a graph with the cache to perform topological sort
+    let mut graph = Graph::new();
+    for cache_entry in cache.entries() {
+        let path_buf: PathBuf = cache_entry.source_name.clone();
+        let path_buf_index = graph.add_node(path_buf);
 
-                if let Some(deployed_bytecode) = artifact.deployed_bytecode.as_ref() {
-                    let deployed_bytecode = deployed_bytecode.bytecode.as_ref().unwrap().clone();
-                    let bytecode = artifact.bytecode.as_ref().unwrap().clone();
-
-                    if node.node_type == NodeType::ContractDefinition {
-                        let contract_name = node.attribute::<String>("name").unwrap();
-
-                        let analyze_contract = match contracts_involved {
-                            Some(contracts_involved) => contracts_involved.contains(&contract_name),
-                            None => true,
-                        };
-
-                        if analyze_contract {
-                            let source =
-                                fs::read_to_string(root_path.join(absolute_path.clone())).unwrap();
-
-                            let mut visitor = StatementVisitor::new(
-                                deployed_bytecode,
-                                bytecode,
-                                root_path
-                                    .join(absolute_path.clone())
-                                    .to_string_lossy()
-                                    .to_string(),
-                                source,
-                            );
-                            visitor.visit_contract(&node.clone()).unwrap();
-                            debug_unit.insert(contract_name, visitor.debug_unit);
-                        }
-                    }
-                }
-            });
-        } else {
-            println!("ast not found")
+        for import in cache_entry.imports.clone() {
+            let import_index = graph.add_node(import.clone());
+            graph.add_edge(import_index, path_buf_index);
         }
     }
 
-    Ok(debug_unit)
-}
+    let topological_sort = graph.topological_sort().expect("there should be something");
+    let mut debug_unit = HashMap::new();
 
-fn load_artifacts(
-    artifacts_path: &Path,
-) -> Result<Vec<(PathBuf, ConfigurableContractArtifact)>, Box<dyn std::error::Error>> {
-    let mut artifacts = Vec::new();
+    for local_file_path in topological_sort {
+        let cache_entry = cache.files.get(&local_file_path).unwrap();
+        let source_name = cache_entry.source_name.clone();
 
-    // Read all directories in the artifacts path
-    for entry in fs::read_dir(artifacts_path)? {
-        let entry = entry?;
-        let path = entry.path();
+        let source = fs::read_to_string(root_path.join(source_name.clone())).unwrap();
 
-        // if path is build-info, skip
-        if path.file_name().unwrap() == "build-info" {
-            continue;
-        }
+        for (_, mut artifact) in cache_entry.artifacts.clone() {
+            let (_, xx) = artifact.pop_first().expect("expect something here");
+            let cached_artifact = xx.get("default").expect("something here too");
 
-        // Check if it's a directory
-        if path.is_dir() {
-            // Look for .json files inside the directory
-            for file in fs::read_dir(&path)? {
-                let file = file?;
-                let file_path = file.path();
+            let absolute_path = config.artifacts.join(cached_artifact.path.clone());
 
-                // Check if it's a JSON file
-                if file_path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    // Read and parse the JSON file
-                    let content = fs::read_to_string(&file_path)?;
-                    match serde_json::from_str::<ConfigurableContractArtifact>(&content) {
-                        Ok(artifact) => {
-                            artifacts.push((file_path, artifact));
-                        }
-                        Err(e) => {
-                            println!("Failed to parse artifact at {:?}: {}", file_path, e);
-                            continue;
-                        }
+            // load the artifact now
+            let artifact = load_artifact(&absolute_path)?;
+
+            if let Some(ast) = artifact.ast.clone() {
+                // For all the contracts parse and extract struct references into TraceContext
+                // TODO: Merge this with the contract visitor.
+                ast.nodes
+                    .iter()
+                    .filter(|source_node| source_node.node_type == NodeType::ContractDefinition)
+                    .for_each(|contract_node| {
+                        let mut contract_state_variables = Vec::new();
+                        contract_node.nodes.iter().for_each(|node| {
+                            let node_id = node.id.unwrap();
+
+                            if node.node_type == NodeType::StructDefinition {
+                                trace_context.structs.insert(node_id, node.clone());
+                            } else if node.node_type == NodeType::VariableDeclaration {
+                                // not sure if I have to filter by stateVariable here
+                                let variable =
+                                    StatementVisitor::build_debug_variable(node).expect("variable");
+
+                                trace_context
+                                    .state_variables
+                                    .insert(node_id, variable.unwrap());
+                                contract_state_variables.push(node_id);
+                            }
+                        });
+
+                        trace_context
+                            .contract_state_variables
+                            .insert(contract_node.id.unwrap(), contract_state_variables);
+                    });
+
+                // check if the absolute_path starts with 'lib/'
+                // for now skip all the libs since we cannot parse them yet
+                if local_file_path.starts_with("lib/") {
+                    continue;
+                }
+
+                // Extract the compilation target contract name from the artifact path.
+                // Each JSON artifact represents one compilation target, but the AST includes
+                // all contracts/nodes from the source file plus imported dependencies.
+                // The filename tells us which specific contract was the compilation target.
+                // IMPORTANT: Bytecode is only available for the compilation target contract.
+                // Attempting to decode other ContractDefinitions with a visitor will fail.
+                // e.g., "Parent.json" = Parent is the target with bytecode, but AST contains Parent + Child + imports
+                let name = absolute_path.file_name().unwrap().to_str().unwrap();
+                let name = name
+                    .split('/')
+                    .next_back()
+                    .unwrap_or("")
+                    .strip_suffix(".json")
+                    .unwrap_or("");
+
+                if let Some(contracts_involved) = contracts_involved {
+                    if !contracts_involved.contains(name) {
+                        continue;
                     }
                 }
+
+                ast.nodes.iter().for_each(|node| {
+                    let node = node.clone();
+                    let source = source.clone();
+
+                    if let Some(deployed_bytecode) = artifact.deployed_bytecode.as_ref() {
+                        let deployed_bytecode =
+                            deployed_bytecode.bytecode.as_ref().unwrap().clone();
+                        let bytecode = artifact.bytecode.as_ref().unwrap().clone();
+
+                        if node.node_type == NodeType::ContractDefinition {
+                            let contract_name = node.attribute::<String>("name").unwrap();
+
+                            let mut linearized_base_contracts = node
+                                .attribute::<Vec<usize>>("linearizedBaseContracts")
+                                .unwrap();
+                            linearized_base_contracts.reverse();
+
+                            if contract_name == name {
+                                let state_variables = linearized_base_contracts
+                                    .iter()
+                                    .flat_map(|base_contract_id| {
+                                        trace_context
+                                            .contract_state_variables
+                                            .get(base_contract_id)
+                                            .unwrap()
+                                    })
+                                    .copied()
+                                    .collect::<Vec<_>>();
+
+                                let mut visitor = StatementVisitor::new(
+                                    deployed_bytecode,
+                                    bytecode,
+                                    source_name.clone().to_string_lossy().to_string(),
+                                    source,
+                                );
+                                visitor.visit_contract(&node.clone()).unwrap();
+
+                                // just so that we can keep the reference around
+                                let mut dd = visitor.debug_unit;
+                                dd.source_id = artifact.id.unwrap();
+                                dd.state_variables = state_variables;
+
+                                debug_unit.insert(contract_name, dd);
+                            }
+                        }
+                    }
+                });
+            } else {
+                println!("ast not found")
             }
         }
     }
 
-    Ok(artifacts)
+    Ok((debug_unit, trace_context))
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -145,16 +247,30 @@ pub struct SourceLocation {
     pub length: Option<usize>,
 }
 
+#[derive(Debug, Clone)]
+pub struct BytecodeMap {
+    pub source_map: SourceMap,
+    pub _pc_ic_map: IcPcMap,
+    pub ic_pc_map: PcIcMap,
+}
+
+impl BytecodeMap {
+    pub fn new(bytecode: &CompactBytecode) -> Self {
+        let source_map = parse(&bytecode.clone().source_map.unwrap()).unwrap();
+        let pc_ic_map = IcPcMap::new(bytecode.bytes().unwrap());
+        let ic_pc_map = PcIcMap::new(bytecode.bytes().unwrap());
+
+        Self {
+            source_map,
+            _pc_ic_map: pc_ic_map,
+            ic_pc_map,
+        }
+    }
+}
+
 struct StatementVisitor {
     pub source: String,
     pub debug_unit: DebugUnit,
-
-    pub source_map: SourceMap,
-    pub pc_ic_map: IcPcMap,
-
-    // this are the ones used for deployment
-    pub deployed_source_map: SourceMap,
-    pub deployed_pc_ic_map: IcPcMap,
 
     // in_constructor signals if we are in the constructor of the contract
     pub in_constructor: bool,
@@ -165,7 +281,9 @@ struct StatementVisitor {
 
 #[derive(Debug, Clone, PartialEq)]
 enum StatementVisitorError {
+    #[allow(dead_code)]
     ParseError,
+    MissingAttribute(String),
     IncorrectType(NodeType, NodeType),
 }
 
@@ -173,6 +291,9 @@ impl Display for StatementVisitorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StatementVisitorError::ParseError => write!(f, "ParseError"),
+            StatementVisitorError::MissingAttribute(attribute_name) => {
+                write!(f, "MissingAttribute: {}", attribute_name)
+            }
             StatementVisitorError::IncorrectType(expected, actual) => write!(
                 f,
                 "IncorrectType: expected {:?}, got {:?}",
@@ -189,8 +310,10 @@ trait OptionExt<T> {
 }
 
 impl<T> OptionExt<T> for Option<T> {
-    fn ok_or_missing_attribute(self, _attribute_name: &str) -> StatementVisitorResult<T> {
-        self.ok_or(StatementVisitorError::ParseError)
+    fn ok_or_missing_attribute(self, attribute_name: &str) -> StatementVisitorResult<T> {
+        self.ok_or(StatementVisitorError::MissingAttribute(
+            attribute_name.to_string(),
+        ))
     }
 }
 
@@ -204,18 +327,17 @@ impl StatementVisitor {
         source: String,
     ) -> Self {
         Self {
-            source_map: parse(&bytecode.clone().source_map.unwrap()).unwrap(),
-            pc_ic_map: IcPcMap::new(bytecode.bytes().unwrap()),
             source: source.clone(),
-            deployed_source_map: parse(&deployed_bytecode.clone().source_map.unwrap()).unwrap(),
-            deployed_pc_ic_map: IcPcMap::new(deployed_bytecode.bytes().unwrap()),
             in_constructor: false,
             contract_node: None,
             debug_unit: DebugUnit {
-                _name: String::new(),
+                source_id: 0,
                 path: path.clone(),
                 functions: HashMap::new(),
                 variables: Vec::new(),
+                bytecode: BytecodeMap::new(&bytecode),
+                deployed_bytecode: BytecodeMap::new(&deployed_bytecode),
+                state_variables: Vec::new(),
             },
         }
     }
@@ -226,23 +348,58 @@ impl StatementVisitor {
         for node in &node.nodes {
             match node.node_type {
                 NodeType::FunctionDefinition => {
-                    let function = self.build_debug_function(node)?;
+                    let kind = node
+                        .attribute::<String>("kind")
+                        .ok_or_missing_attribute("kind")?;
+
+                    let function_kind = if kind == "constructor" {
+                        FunctionKind::Constructor
+                    } else {
+                        FunctionKind::Function
+                    };
+
+                    let function = self.build_debug_function(node, function_kind)?;
                     self.debug_unit
                         .functions
                         .insert(function.name.clone(), function);
                 }
                 NodeType::VariableDeclaration => {
+                    /*
                     let state_variable = node
                         .attribute::<bool>("stateVariable")
                         .ok_or_missing_attribute("stateVariable")?;
 
                     if state_variable {
-                        let var = self.build_debug_variable(node)?;
+                        let var = Self::build_debug_variable(node)?;
                         self.debug_unit.variables.push(var.unwrap());
                     }
+                    */
                 }
                 NodeType::StructDefinition => {}
                 NodeType::EventDefinition => {}
+                NodeType::ModifierDefinition => {
+                    let root_block = if let Some(body) = &node.body {
+                        self.build_debug_block(body)?
+                    } else {
+                        Block::default()
+                    };
+
+                    let func = Function {
+                        name: node.attribute("name").ok_or_missing_attribute("name")?,
+                        kind: FunctionKind::Modifier,
+                        root_block,
+                        parameters: Vec::new(),
+                        loc: SourceLocationHelper {
+                            start: node.src.start,
+                            length: node.src.length.unwrap(),
+                        },
+                    };
+
+                    self.debug_unit.functions.insert(func.name.clone(), func);
+                }
+                NodeType::EnumDefinition => {
+                    // TODO
+                }
                 _ => {
                     panic!("Not handled {:?}", node.node_type);
                 }
@@ -299,43 +456,22 @@ impl StatementVisitor {
         }
     }
 
-    fn find_exit_pc(&self, node: &Node) -> StatementVisitorResult<Option<usize>> {
-        let (pc_ic_map, source_map) = self.get_source_map();
-
-        // Find source elements within function's range that have Jump::Out
-        let start = node.src.start as u32;
-        let length = node.src.length.map_or(0, |l| l as u32);
-
-        let matches = source_map
-            .iter()
-            .enumerate()
-            .filter(|(_, elem)| {
-                if self.in_constructor {
-                    // constructor does not have a jump out, mabye because it does not have a switch
-                    elem.offset() == start && elem.length() == length
-                } else {
-                    elem.offset() == start && elem.length() == length && elem.jump() == Jump::Out
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // Get the PC for the last matching element (if any)
-        if let Some((idx, _)) = matches.last() {
-            Ok(pc_ic_map.get(*idx))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn build_debug_function(&mut self, node: &Node) -> StatementVisitorResult<Function> {
-        let kind = node
-            .attribute::<String>("kind")
-            .ok_or_missing_attribute("kind")?;
-
-        let is_constructor = kind == "constructor";
+    fn build_debug_function(
+        &mut self,
+        node: &Node,
+        kind: FunctionKind,
+    ) -> StatementVisitorResult<Function> {
+        let is_constructor = matches!(kind, FunctionKind::Constructor);
         self.in_constructor = is_constructor;
 
-        let name = node.attribute("name").ok_or_missing_attribute("name")?;
+        let name = match kind {
+            FunctionKind::Constructor => "constructor".to_string(),
+            FunctionKind::Function => node.attribute("name").ok_or_missing_attribute("name")?,
+            _ => {
+                unreachable!("unhandled function kind {:?}", kind);
+            }
+        };
+
         let parameters = self.build_debug_parameters(node)?;
 
         let root_block = if let Some(body) = &node.body {
@@ -344,56 +480,19 @@ impl StatementVisitor {
             Block::default()
         };
 
-        let exit_pc = if is_constructor {
-            // the constructor does not have an ouput but we can use the refercence to the contract node for this
-            self.find_exit_pc(self.contract_node.as_ref().unwrap())?
-                .expect("constructor should have an exit pc")
-        } else {
-            self.find_exit_pc(node)?
-                .expect("function should have an exit pc")
-        };
-
         let function = Function {
             name,
-            entry_pc: self.get_entry_pc_for_function(node).unwrap(),
             root_block,
+            kind,
             parameters,
-            exit_pc,
+            loc: SourceLocationHelper {
+                start: node.src.start,
+                length: node.src.length.unwrap(),
+            },
         };
 
         self.in_constructor = false;
         Ok(function)
-    }
-
-    fn get_entry_pc_for_function(&self, node: &Node) -> Option<usize> {
-        let (pc_ic_map, source_map) = self.get_source_map();
-
-        let start = node.src.start as u32;
-        let length = node.src.length? as u32;
-
-        // Get all matching source elements for this node
-        let matches: Vec<_> = source_map
-            .iter()
-            .enumerate()
-            .filter(|(_, elem)| elem.offset() == start && elem.length() == length)
-            .collect();
-
-        // Find the match that comes after a JUMP OUT instruction
-        for (idx, _) in &matches {
-            let idx = *idx;
-
-            // Check if there's a previous instruction with JUMP OUT
-            if idx > 0 {
-                let prev_elem = &source_map[idx - 1];
-                if prev_elem.jump() == Jump::Out {
-                    // Return the PC for this match
-                    return pc_ic_map.get(idx);
-                }
-            }
-        }
-
-        // If no match after JUMP OUT found, return the first match's PC
-        matches.first().and_then(|(idx, _)| pc_ic_map.get(*idx))
     }
 
     fn build_debug_block(&mut self, node: &Node) -> StatementVisitorResult<Block> {
@@ -409,39 +508,45 @@ impl StatementVisitor {
         for statement in &statements {
             match statement.node_type {
                 NodeType::ExpressionStatement => {
-                    // Add regular statement instruction
-                    if let Some(pc) = self.get_pc_for_node(statement) {
-                        let block_location = self.source_location_for(&statement.src);
+                    let block_location = self.source_location_for(&statement.src);
 
-                        block.instructions.push(Instruction {
-                            pc,
-                            location: block_location.clone(),
-                            kind: InstructionKind::Statement,
-                        });
-
-                        // Process for function calls within the expression
-                        if let Some(expr) = statement.attribute::<Node>("expression") {
-                            self.process_expression_for_function_calls(
-                                &expr,
-                                &mut block,
-                                &block_location,
-                            )?;
-                        }
+                    // Process for function calls within the expression
+                    // It is important this one takes precedence over the regular statemtent
+                    // If the statement si only the function call, they are going to share the same srcmap
+                    // (maybe we could check that directly too). If they statement is put before the function call
+                    // the match selector during tracing will pick the statement instead of the function call always
+                    // and we will not be able to detect the function call at all.
+                    if let Some(expr) = statement.attribute::<Node>("expression") {
+                        self.process_expression_for_function_calls(
+                            &expr,
+                            &mut block,
+                            &block_location,
+                        )?;
                     }
+
+                    block.instructions.push(Instruction {
+                        location: block_location.clone(),
+                        kind: InstructionKind::Statement,
+                        loc: SourceLocationHelper {
+                            start: statement.src.start,
+                            length: statement.src.length.unwrap(),
+                        },
+                    });
                 }
                 NodeType::IfStatement => {
                     // Create single block for if statement body
                     if let Some(true_body) = statement.attribute("trueBody") {
                         let mut if_block = self.build_debug_block(&true_body)?;
                         // Add the condition to the block
-                        if let Some(condition) = statement.attribute("condition") {
-                            if let Some(pc) = self.get_pc_for_node(&condition) {
-                                if_block.condition = Some(Instruction {
-                                    pc,
-                                    location: self.source_location_for(&condition.src),
-                                    kind: InstructionKind::Statement,
-                                });
-                            }
+                        if let Some(condition) = statement.attribute::<Node>("condition") {
+                            if_block.condition = Some(Instruction {
+                                location: self.source_location_for(&condition.src),
+                                kind: InstructionKind::Statement,
+                                loc: SourceLocationHelper {
+                                    start: condition.src.start,
+                                    length: condition.src.length.unwrap(),
+                                },
+                            });
                         }
                         block.scopes.push(if_block);
                     }
@@ -451,32 +556,34 @@ impl StatementVisitor {
                     if let Some(body) = &statement.body {
                         let mut for_block = self.build_debug_block(body)?;
                         // Add the condition to the block
-                        if let Some(condition) = statement.attribute("condition") {
-                            if let Some(pc) = self.get_pc_for_node(&condition) {
-                                for_block.condition = Some(Instruction {
-                                    pc,
-                                    location: self.source_location_for(&condition.src),
-                                    kind: InstructionKind::Statement,
-                                });
-                            }
+                        if let Some(condition) = statement.attribute::<Node>("condition") {
+                            for_block.condition = Some(Instruction {
+                                location: self.source_location_for(&condition.src),
+                                kind: InstructionKind::Statement,
+                                loc: SourceLocationHelper {
+                                    start: condition.src.start,
+                                    length: condition.src.length.unwrap(),
+                                },
+                            });
                         }
                         block.scopes.push(for_block);
                     }
                 }
                 NodeType::VariableDeclarationStatement => {
-                    let var = self.build_debug_variable(statement)?.expect("variable");
+                    let var = Self::build_debug_variable(statement)?.expect("variable");
                     self.debug_unit.variables.push(var.clone());
                     block.variables.push(var.id as usize);
 
                     let block_location = self.source_location_for(&statement.src);
 
-                    if let Some(pc) = self.get_pc_for_node(statement) {
-                        block.instructions.push(Instruction {
-                            pc,
-                            location: block_location.clone(),
-                            kind: InstructionKind::VariableDeclaration(var.id as usize),
-                        });
-                    }
+                    block.instructions.push(Instruction {
+                        location: block_location.clone(),
+                        kind: InstructionKind::VariableDeclaration(var.id as usize),
+                        loc: SourceLocationHelper {
+                            start: statement.src.start,
+                            length: statement.src.length.unwrap(),
+                        },
+                    });
 
                     // parse the initial value for other expressions because it might include a function call that we need to parse
                     if let Some(expr) = statement.attribute::<Node>("initialValue") {
@@ -487,15 +594,60 @@ impl StatementVisitor {
                         )?;
                     }
                 }
+                NodeType::TryStatement => {
+                    let clauses = statement
+                        .attribute::<Vec<Node>>("clauses")
+                        .unwrap_or_default();
+
+                    let external_call = statement
+                        .attribute::<Node>("externalCall")
+                        .ok_or_missing_attribute("externalCall")?;
+
+                    let block_location = self.source_location_for(&statement.src);
+
+                    self.process_expression_for_function_calls(
+                        &external_call,
+                        &mut block,
+                        &block_location,
+                    )?;
+
+                    let mut catch_blocks = Vec::new();
+                    for clause in clauses {
+                        let block = clause
+                            .attribute::<Node>("block")
+                            .ok_or_missing_attribute("block")?;
+
+                        let params = if clause.attribute::<Node>("parameters").is_some() {
+                            self.build_debug_parameters(&clause)?
+                        } else {
+                            Vec::new()
+                        };
+                        let variables = params.iter().map(|var| var.id as usize).collect();
+
+                        let mut block = self.build_debug_block(&block)?;
+                        block.variables = variables;
+
+                        catch_blocks.push(block);
+                    }
+
+                    block.scopes.push(Block {
+                        variables: Vec::new(),
+                        condition: None,
+                        instructions: Vec::new(),
+                        scopes: catch_blocks,
+                        location: block_location,
+                    });
+                }
                 _ => {
                     // Regular statement
-                    if let Some(pc) = self.get_pc_for_node(statement) {
-                        block.instructions.push(Instruction {
-                            pc,
-                            location: self.source_location_for(&statement.src),
-                            kind: InstructionKind::Statement,
-                        });
-                    }
+                    block.instructions.push(Instruction {
+                        location: self.source_location_for(&statement.src),
+                        kind: InstructionKind::Statement,
+                        loc: SourceLocationHelper {
+                            start: statement.src.start,
+                            length: statement.src.length.unwrap(),
+                        },
+                    });
                 }
             }
         }
@@ -503,6 +655,7 @@ impl StatementVisitor {
         Ok(block)
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn process_expression_for_function_calls(
         &self,
         node: &Node,
@@ -522,13 +675,14 @@ impl StatementVisitor {
                 }
 
                 // Add function call instruction using block's location
-                if let Some(pc) = self.get_first_pc_for_node(node) {
-                    block.instructions.push(Instruction {
-                        pc,
-                        location: block_location.clone(),
-                        kind: InstructionKind::FunctionCall,
-                    });
-                }
+                block.instructions.push(Instruction {
+                    location: block_location.clone(),
+                    kind: InstructionKind::FunctionCall,
+                    loc: SourceLocationHelper {
+                        start: node.src.start,
+                        length: node.src.length.unwrap(),
+                    },
+                });
 
                 // Still process arguments for nested function calls
                 if let Some(args) = node.attribute::<Vec<Node>>("arguments") {
@@ -565,41 +719,13 @@ impl StatementVisitor {
         Ok(())
     }
 
-    fn get_pc_for_node(&self, node: &Node) -> Option<usize> {
-        let (pc_ic_map, source_map) = self.get_source_map();
-
-        let start = node.src.start as u32;
-        let length = node.src.length? as u32;
-
-        source_map
-            .iter()
-            .enumerate()
-            .filter(|(_, elem)| elem.offset() == start && elem.length() == length)
-            .next_back()
-            .and_then(|(idx, _)| pc_ic_map.get(idx))
-    }
-
-    fn get_first_pc_for_node(&self, node: &Node) -> Option<usize> {
-        let (pc_ic_map, source_map) = self.get_source_map();
-
-        let start = node.src.start as u32;
-        let length = node.src.length? as u32;
-
-        source_map
-            .iter()
-            .enumerate()
-            .find(|(_, elem)| elem.offset() == start && elem.length() == length)
-            .and_then(|(idx, _)| pc_ic_map.get(idx))
-    }
-
-    fn build_debug_variable(&self, node: &Node) -> StatementVisitorResult<Option<Variable>> {
+    fn build_debug_variable(node: &Node) -> StatementVisitorResult<Option<Variable>> {
         if let Some(name) = node.attribute("name") {
             // this is most likely a state variable
             if let Some(id) = node.id {
                 return Ok(Some(Variable {
                     name,
                     id: id as u64,
-                    location: self.source_location_for(&node.src),
                     state_variable: true,
                 }));
             }
@@ -618,7 +744,6 @@ impl StatementVisitor {
             return Ok(Some(Variable {
                 name,
                 id: node.id.unwrap() as u64,
-                location: self.source_location_for(&node.src),
                 state_variable: false,
             }));
         }
@@ -651,7 +776,7 @@ impl StatementVisitor {
                 ));
             }
 
-            if let Some(var) = self.build_debug_variable(&param)? {
+            if let Some(var) = Self::build_debug_variable(&param)? {
                 let mut var = var.clone();
                 var.state_variable = false;
 
@@ -662,21 +787,30 @@ impl StatementVisitor {
 
         Ok(parameters)
     }
+}
 
-    fn get_source_map(&self) -> (&IcPcMap, &SourceMap) {
-        let (pc_ic_map, source_map) = if self.in_constructor {
-            (&self.pc_ic_map, &self.source_map)
-        } else {
-            (&self.deployed_pc_ic_map, &self.deployed_source_map)
-        };
+#[derive(Debug, Clone)]
+pub struct PcIcMap {
+    pub inner: HashMap<usize, usize>,
+}
+impl PcIcMap {
+    /// Creates a new `IcPcMap` for the given code.
+    pub fn new(code: &[u8]) -> Self {
+        Self {
+            inner: make_map::<true>(code),
+        }
+    }
 
-        (pc_ic_map, source_map)
+    /// Returns the instruction counter for the given program counter.
+    pub fn get(&self, pc: usize) -> Option<usize> {
+        self.inner.get(&pc).copied()
     }
 }
 
 /// Maps from program counter to instruction counter.
 #[derive(Debug, Clone)]
 pub struct IcPcMap {
+    #[allow(dead_code)]
     pub inner: HashMap<usize, usize>,
 }
 
@@ -689,6 +823,7 @@ impl IcPcMap {
     }
 
     /// Returns the instruction counter for the given program counter.
+    #[allow(dead_code)]
     pub fn get(&self, pc: usize) -> Option<usize> {
         self.inner.get(&pc).copied()
     }
@@ -721,70 +856,84 @@ fn make_map<const PC_FIRST: bool>(code: &[u8]) -> HashMap<usize, usize> {
     map
 }
 
+#[derive(Debug, Clone)]
+pub enum MatchResult {
+    Function(Function),
+    FunctionWithOut(Function),
+    Instruction(Instruction),
+    ConstructorOut,
+}
+
 // Conversion from your existing structures
 impl DebugUnit {
-    /// Get the source location for a given PC
-    pub fn get_location_at_pc(&self, pc: usize) -> (Option<&Instruction>, Vec<usize>) {
-        self.functions
-            .values()
-            .find_map(|function| {
-                // Helper function to recursively search blocks
-                fn search_block(
-                    block: &Block,
-                    pc: usize,
-                    parent_vars: Vec<usize>,
-                ) -> (Option<&Instruction>, Vec<usize>) {
-                    let mut vars_in_scope = parent_vars.clone();
+    pub fn match_location(&self, loc: &SourceElement) -> (Option<MatchResult>, Vec<usize>) {
+        fn search_block(
+            block: &Block,
+            loc: &SourceElement,
+            parent_vars: Vec<usize>,
+        ) -> (Option<MatchResult>, Vec<usize>) {
+            let mut vars_in_scope = parent_vars.clone();
 
-                    // Check instructions in current block
-                    for inst in &block.instructions {
-                        if let InstructionKind::VariableDeclaration(id) = inst.kind {
-                            vars_in_scope.push(id);
-                        };
+            // add the variables from the block itself, for example, variable declared in a
+            // try statement.
+            vars_in_scope.extend(block.variables.iter().copied());
 
-                        if inst.pc == pc {
-                            return (Some(inst), vars_in_scope);
-                        }
-                    }
+            for inst in &block.instructions {
+                if let InstructionKind::VariableDeclaration(id) = inst.kind {
+                    vars_in_scope.push(id);
+                };
 
-                    // Recursively check nested scopes
-                    for scope in &block.scopes {
-                        let (found, vars) = search_block(scope, pc, vars_in_scope.clone());
-                        if found.is_some() {
-                            return (found, vars);
-                        }
-                    }
-
-                    // Check condition
-                    if let Some(ref cond) = block.condition {
-                        if cond.pc == pc {
-                            return (Some(cond), vars_in_scope);
-                        }
-                    }
-                    (None, vars_in_scope)
+                if inst.loc.matches(loc) {
+                    return (Some(MatchResult::Instruction(inst.clone())), vars_in_scope);
                 }
+            }
 
-                // Initialize vars_in_scope with state variable IDs
-                let mut vars_in_scope: Vec<usize> = self
-                    .variables
-                    .iter()
-                    .filter(|v| v.state_variable)
-                    .map(|v| v.id as usize)
-                    .collect();
-
-                // add variables from the function parameters
-                for func in function.parameters.iter() {
-                    vars_in_scope.push(func.id as usize);
+            for scope in &block.scopes {
+                if let (Some(result), vars) = search_block(scope, loc, vars_in_scope.clone()) {
+                    return (Some(result), vars);
                 }
+            }
 
-                let result = search_block(&function.root_block, pc, vars_in_scope);
-                if result.0.is_some() {
-                    Some(result)
-                } else {
-                    None
+            // cond not done yet?
+            if let Some(cond) = &block.condition {
+                if cond.loc.matches(loc) {
+                    return (Some(MatchResult::Instruction(cond.clone())), vars_in_scope);
                 }
-            })
-            .unwrap_or((None, vec![]))
+            }
+
+            (None, vec![])
+        }
+
+        // try to find exact match by brute force for now
+        for func in self.functions.values() {
+            // Initialize vars_in_scope with state variable IDs
+            let mut vars_in_scope: Vec<usize> = self
+                .variables
+                .iter()
+                .filter(|v| v.state_variable)
+                .map(|v| v.id as usize)
+                .collect();
+
+            // we track other state variables in this other place
+            // TODO: deprecate the previous one. I am still unsure if we still need it, I will keep it
+            // until there are more unit tests.
+            vars_in_scope.extend(self.state_variables.iter().copied());
+
+            // add variables from the function parameters
+            for func in func.parameters.iter() {
+                vars_in_scope.push(func.id as usize);
+            }
+
+            if func.loc.matches(loc) {
+                return (Some(MatchResult::Function(func.clone())), vars_in_scope);
+            }
+
+            if let (Some(result), vars) = search_block(&func.root_block, loc, vars_in_scope) {
+                return (Some(result), vars);
+            }
+        }
+
+        (None, vec![])
     }
 }
 
@@ -792,6 +941,9 @@ impl DebugUnit {
 pub enum StepKind {
     FunctionDefinition(String),
     FunctionCall,
+
+    #[allow(dead_code)]
+    ConstructorOut,
 
     #[default]
     Statement,
@@ -876,48 +1028,76 @@ pub enum TraceError {
     #[error("Found function entry without call")]
     FoundFunctionEntryWithoutCall,
 
+    #[allow(dead_code)]
     #[error("Found function exit without call")]
     FoundFunctionExitWithoutCall,
 
+    #[allow(dead_code)]
     #[error("Found instruction without function entry")]
     FoundInstructionWithoutFunctionEntry,
 
+    #[allow(dead_code)]
     #[error("Last step should have call trace equal to 0")]
     LastStepShouldHaveCallTraceEqualZero,
 
-    #[error("Function with incorrect exit pc: {0} {1} {2}")]
-    FunctionWithIncorrectExitPc(String, usize, String),
+    #[error("Function with incorrect exit pc: found {0} expected {1}")]
+    FunctionWithIncorrectExitPc(String, String),
 }
 
-pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTrace, TraceError> {
+fn source_element_matches(a: &SourceElement, b: &SourceElement) -> bool {
+    a.offset() == b.offset() && a.length() == b.length() && a.index_i32() == b.index_i32()
+}
+
+pub const REVERT: u8 = 0xfd;
+
+#[derive(Debug, Clone)]
+struct OtherMatchLocation {
+    match_result: MatchResult,
+    source_location: SourceElement,
+    path: String,
+    vars_in_scope: Vec<usize>,
+}
+
+pub fn generate_trace(
+    workspace_path: &str,
+    trace_path: &str,
+) -> Result<(DebugTrace, TraceContext), TraceError> {
     let content = fs::read_to_string(trace_path)
         .map_err(|e| TraceError::FailedToReadFile(trace_path.to_string(), e))?;
 
     let context: DebuggerContext = serde_json::from_str(&content)
         .map_err(|e| TraceError::FailedToParseDebugDump(trace_path.to_string(), e))?;
 
-    let contracts_involved: HashSet<String> = context
-        .contracts
-        .identified_contracts
-        .values()
-        .cloned()
-        .collect();
-
     let root_path = Path::new(workspace_path);
-    let debug_units = generate_debug_units(root_path, Some(&contracts_involved)).unwrap();
-
-    let mut steps: Vec<DebugStep> = Vec::new();
-
-    let mut call_trace = Vec::new();
-    let mut expecting_function = true;
+    let (debug_units, trace_context) = generate_debug_units(root_path, None).unwrap();
 
     // map each contract to its current storage
     let mut contracts_storage = HashMap::new();
 
+    // get all the debug unit and sort them out by source id
+    let mut debug_units_by_source_id = HashMap::new();
+    for (_, dd) in debug_units.iter() {
+        debug_units_by_source_id
+            .entry(dd.source_id)
+            .or_insert_with(Vec::new)
+            .push(dd.clone());
+    }
+
+    let mut matched_locations = Vec::new();
+
     for node in context.debug_arena.iter() {
+        // name of the contract in this step
+        let contract = context
+            .contracts
+            .identified_contracts
+            .get(&node.address)
+            .unwrap();
+
+        let debug_unit = debug_units.get(contract).unwrap();
+
         for step in node.steps.iter() {
-            let memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
-            let stack: Vec<Bytes> = step
+            let _memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
+            let _stack: Vec<Bytes> = step
                 .stack
                 .clone()
                 .unwrap()
@@ -926,7 +1106,7 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                 .collect();
 
             // the storage for the current state is before any key has been inserted
-            let storage = contracts_storage
+            let _storage = contracts_storage
                 .get(&step.contract)
                 .unwrap_or(&HashMap::new())
                 .clone();
@@ -942,100 +1122,177 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
                     );
             }
 
-            if let Some(contract_name) = context.contracts.identified_contracts.get(&step.contract)
-            {
-                if let Some(debug_unit) = debug_units.get(contract_name) {
-                    // for all the functions, find the entry pc
-                    for func in debug_unit.functions.values() {
-                        if func.entry_pc == step.pc {
-                            if !expecting_function {
-                                return Err(TraceError::FoundFunctionEntryWithoutCall);
-                            }
-                            expecting_function = false;
+            let pc = step.pc;
 
-                            let is_first_step = steps.is_empty();
+            let bytecode = if node.kind.is_create() {
+                &debug_unit.bytecode
+            } else {
+                &debug_unit.deployed_bytecode
+            };
 
-                            steps.push(DebugStep {
-                                location: func.root_block.location.clone(),
-                                path: debug_unit.path.clone(),
-                                memory: memory.clone(),
-                                stack: stack.clone(),
-                                storage: storage.clone(),
-                                variables_in_scope: vec![],
-                                call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
-                                kind: StepKind::FunctionDefinition(func.name.clone()),
-                            });
+            let ic_index = bytecode.ic_pc_map.get(pc).unwrap();
+            let source_location = bytecode.source_map.get(ic_index).unwrap();
+            let source_id = source_location.index_i32() as u32;
 
-                            // add the entry to the call trace alongside its position in the steps vector
-                            if !is_first_step {
-                                // we do not add any for the root function call
-                                call_trace.push((func, steps.len() - 1));
-                            }
-                        }
-                    }
-                    // same with exit pc
-                    for func in debug_unit.functions.values() {
-                        if func.exit_pc == step.pc {
-                            if expecting_function {
-                                return Err(TraceError::FoundFunctionExitWithoutCall);
-                            }
+            let debug_units_to_test =
+                if let Some(debug_unit) = debug_units_by_source_id.get(&source_id) {
+                    debug_unit
+                } else {
+                    continue;
+                };
 
-                            // pop the last call trace and make sure the function is the same
-                            let last_call = call_trace.pop();
-                            if let Some(last_call) = last_call {
-                                if last_call.0.name.clone() != func.name {
-                                    return Err(TraceError::FunctionWithIncorrectExitPc(
-                                        func.name.clone(),
-                                        func.exit_pc,
-                                        last_call.0.name.clone(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
+            for debug_unit_to_test in debug_units_to_test.iter() {
+                if let (Some(loc), mut vars) = debug_unit_to_test.match_location(source_location) {
+                    // TODO: We are still tracking some duplicated ids
+                    vars.sort();
+                    vars.dedup();
 
-                    if let (Some(instruction), variables_in_scope) =
-                        debug_unit.get_location_at_pc(step.pc)
-                    {
-                        // get a list of all the calltrace ids
-                        if expecting_function {
-                            return Err(TraceError::FoundInstructionWithoutFunctionEntry);
-                        }
+                    matched_locations.push(OtherMatchLocation {
+                        match_result: loc,
+                        source_location: source_location.clone(),
+                        path: debug_unit_to_test.path.clone(),
+                        vars_in_scope: vars,
+                    });
+                }
+            }
+        }
 
-                        if matches!(instruction.kind, InstructionKind::FunctionCall) {
-                            expecting_function = true;
+        // check the last item from the steps
+        let last = node.steps.last().unwrap();
+        let did_revert = last.op.get() == REVERT;
 
-                            steps.push(DebugStep {
-                                location: instruction.location.clone(),
-                                path: debug_unit.path.clone(),
-                                variables_in_scope,
-                                memory: memory.clone(),
-                                stack,
-                                storage,
-                                call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
-                                kind: StepKind::FunctionCall,
-                            });
-                        } else {
-                            steps.push(DebugStep {
-                                location: instruction.location.clone(),
-                                path: debug_unit.path.clone(),
-                                variables_in_scope,
-                                memory: memory.clone(),
-                                stack,
-                                storage,
-                                call_trace: call_trace.iter().map(|(_, pos)| *pos).collect(),
-                                kind: StepKind::Statement,
-                            });
-                        }
+        if node.kind.is_create() || did_revert {
+            // we have to put a new "fake" instruction to signal that we got out of the constructor because
+            // the way the constructor is laid out in the srcmap/pc is srcmap of the contract call
+            // and then srcmap of internal elements but not a srcmap for the out call for this contract
+            // so we have to add a new instruction to signal that we got out of the constructor
+            matched_locations.push(OtherMatchLocation {
+                match_result: MatchResult::ConstructorOut,
+                source_location: Default::default(),
+                path: "".to_string(),
+                vars_in_scope: vec![],
+            });
+        }
+    }
+
+    let chunks = matched_locations
+        .linear_group_by(|a, b| source_element_matches(&a.source_location, &b.source_location));
+    let mut final_matched_locations = Vec::new();
+
+    for chunk in chunks {
+        // figure out the first entry to know how we are going to match and process this chunk
+        let first_entry = chunk.first().unwrap();
+
+        match &first_entry.match_result {
+            MatchResult::Function(_) => {
+                // find the element with the Out if there is any, that signals the function exit
+                let func_with_out = chunk.iter().find(|i| i.source_location.jump() == Jump::Out);
+
+                if let Some(func_with_out) = func_with_out {
+                    let func_core = match &func_with_out.match_result {
+                        MatchResult::Function(func) => func,
+                        _ => panic!("this is not expected to happen"),
+                    };
+                    final_matched_locations.push(OtherMatchLocation {
+                        match_result: MatchResult::FunctionWithOut(func_core.clone()),
+                        source_location: func_with_out.source_location.clone(), // we care less about this ones
+                        path: func_with_out.path.clone(),
+                        vars_in_scope: vec![],
+                    });
+                } else {
+                    // otherwise, pick the last element that matches
+                    let last_element = chunk.last().unwrap();
+                    final_matched_locations.push(last_element.clone());
+                }
+            }
+            MatchResult::Instruction(inst) => {
+                if matches!(inst.kind, InstructionKind::FunctionCall) {
+                    // for function calls we must have a function with in, because when a function call happens
+                    // you have some sourcemap pc pointer when it returns that we do not need, so in order to filter that, we keep the chunk
+                    // with the in
+                    let does_have_in = chunk.iter().find(|i| i.source_location.jump() == Jump::In);
+                    if does_have_in.is_none() {
+                        continue;
                     }
                 }
+
+                // just get the first instruction
+                final_matched_locations.push(first_entry.clone());
+            }
+            MatchResult::ConstructorOut => {
+                // push it as it is, there should only be one of this
+                final_matched_locations.push(first_entry.clone());
+            }
+            MatchResult::FunctionWithOut(_) => {
+                panic!("this is not expected to happen")
             }
         }
     }
 
-    // the last step should have call trace equal to 0
-    if !steps.last().unwrap().call_trace.is_empty() {
-        return Err(TraceError::LastStepShouldHaveCallTraceEqualZero);
+    let mut steps = Vec::new();
+    let mut call_trace = Vec::new();
+    let mut expecting_function = true;
+
+    for i in final_matched_locations.iter() {
+        let local_call_trace = call_trace.iter().map(|(_, pos)| *pos).collect();
+        let path = i.path.clone();
+
+        match &i.match_result {
+            MatchResult::Function(func) => {
+                if !expecting_function {
+                    return Err(TraceError::FoundFunctionEntryWithoutCall);
+                }
+                expecting_function = false;
+
+                let is_first_step = steps.is_empty();
+                if !is_first_step {
+                    call_trace.push((func, steps.len() - 1));
+                }
+
+                steps.push(DebugStep {
+                    location: func.root_block.location.clone(),
+                    path,
+                    variables_in_scope: vec![],
+                    call_trace: local_call_trace,
+                    kind: StepKind::FunctionDefinition(func.name.clone()),
+                    ..Default::default()
+                });
+            }
+            MatchResult::ConstructorOut => {
+                call_trace.pop();
+            }
+            MatchResult::FunctionWithOut(func) => {
+                // pop the last call trace and make sure the function is the same
+                let last_call = call_trace.pop();
+                if let Some(last_call) = last_call {
+                    if last_call.0.name.clone() != func.name {
+                        return Err(TraceError::FunctionWithIncorrectExitPc(
+                            func.name.clone(),
+                            last_call.0.name.clone(),
+                        ));
+                    }
+                }
+            }
+            MatchResult::Instruction(inst) => {
+                let stmt_kind = match inst.kind {
+                    InstructionKind::FunctionCall => StepKind::FunctionCall,
+                    _ => StepKind::Statement,
+                };
+
+                steps.push(DebugStep {
+                    location: inst.location.clone(),
+                    path,
+                    variables_in_scope: i.vars_in_scope.clone(),
+                    call_trace: local_call_trace,
+                    kind: stmt_kind,
+                    ..Default::default()
+                });
+
+                if matches!(inst.kind, InstructionKind::FunctionCall) {
+                    expecting_function = true;
+                }
+            }
+        }
     }
 
     // loop over all the debug units and get the variable definitions
@@ -1046,27 +1303,56 @@ pub fn generate_trace(workspace_path: &str, trace_path: &str) -> Result<DebugTra
         }
     }
 
-    Ok(DebugTrace {
-        steps,
-        variables: variable_definitions,
-    })
+    Ok((
+        DebugTrace {
+            steps,
+            variables: variable_definitions,
+        },
+        trace_context,
+    ))
 }
 
 #[derive(Debug, Clone)]
 pub struct DebugUnit {
-    pub _name: String,
     pub path: String,
     pub functions: HashMap<String, Function>,
+    // list of state variables in this contract, they are stored in a
+    // different place in the trace context
+    pub state_variables: Vec<usize>,
+    // list of all the variables in this contract
     pub variables: Vec<Variable>,
+    pub source_id: u32,
+    pub bytecode: BytecodeMap,
+    pub deployed_bytecode: BytecodeMap,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FunctionKind {
+    Constructor,
+    Function,
+    Modifier,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceLocationHelper {
+    pub start: usize,
+    pub length: usize,
+}
+
+impl SourceLocationHelper {
+    pub fn matches(&self, loc: &SourceElement) -> bool {
+        self.start == loc.offset() as usize && self.length == loc.length() as usize
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
-    pub entry_pc: usize,
-    pub exit_pc: usize,
+    #[allow(dead_code)]
+    pub kind: FunctionKind,
     pub root_block: Block,
     pub parameters: Vec<Variable>,
+    pub loc: SourceLocationHelper,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1085,7 +1371,6 @@ pub struct Block {
 pub struct Variable {
     pub name: String,
     pub id: u64,
-    pub location: SourceLocation,
     pub state_variable: bool,
 }
 
@@ -1098,9 +1383,9 @@ pub enum InstructionKind {
 
 #[derive(Debug, Clone)]
 pub struct Instruction {
-    pub pc: usize,
     pub location: SourceLocation,
     pub kind: InstructionKind,
+    pub loc: SourceLocationHelper,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -1266,7 +1551,11 @@ mod tests {
     }
 
     impl DebugTrace {
-        pub fn to_debug_format(&self, workspace_path: &str) -> String {
+        pub fn to_debug_format(
+            &self,
+            workspace_path: &str,
+            debug_context: &TraceContext,
+        ) -> String {
             let mut output = String::new();
 
             for (_i, step) in self.steps.iter().enumerate() {
@@ -1292,6 +1581,9 @@ mod tests {
                         )
                         .unwrap();
                     }
+                    StepKind::ConstructorOut => {
+                        panic!("it is only a placeholder for the constructor out");
+                    }
                     StepKind::FunctionCall => {
                         writeln!(
                             output,
@@ -1305,8 +1597,22 @@ mod tests {
                         let vars_in_scope: Vec<String> = step
                             .variables_in_scope
                             .iter()
-                            .map(|&id| self.variables.get(&(id as u64)).unwrap())
-                            .map(|var| var.name.clone())
+                            .filter_map(|&id| {
+                                // Try to find the variable first in the local debug context and then in
+                                // the general one that stores the state variables
+                                let var = if let Some(var) = self.variables.get(&(id as u64)) {
+                                    var
+                                } else {
+                                    debug_context.state_variables.get(&id).unwrap()
+                                };
+
+                                let name = var.name.clone();
+                                if SKIP_TRACE_LIST.contains(&name.as_str()) {
+                                    None
+                                } else {
+                                    Some(name)
+                                }
+                            })
                             .collect();
 
                         writeln!(
@@ -1375,6 +1681,71 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct TraceTestCase {
+        pub test_path: String,
+        pub expected_path: PathBuf,
+        pub test_case_function: String,
+    }
+
+    fn get_trace_test_cases(workspace_path: &str) -> Vec<TraceTestCase> {
+        let test_dir = Path::new(workspace_path).join("test");
+
+        // find all the foundry test cases, files that have as extension .sol
+        let test_cases = fs::read_dir(test_dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap().path();
+                if path.is_file() && path.extension().unwrap() == "sol" {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // For each of the test cases, find the traces.
+        // The trace files are in the same folder with the following format:
+        // <test_case_name>.t.sol.<func_name>.trace
+        // where <func_name> is the internal function in the test that they trace.
+        let mut trace_test_cases = Vec::new();
+
+        test_cases.iter().for_each(|test_path| {
+            let test_path_no_ext_str = test_path.with_extension("").to_string_lossy().to_string();
+
+            let trace_files = fs::read_dir(test_path.parent().unwrap())
+                .unwrap()
+                .filter_map(|entry| {
+                    // Only keep the files which have the same prefix as 'test_path_no_ext'
+                    let path = entry.unwrap().path();
+
+                    let path_str = path.to_string_lossy().to_string();
+                    if !path_str.starts_with(test_path_no_ext_str.clone().as_str()) {
+                        return None;
+                    }
+
+                    if path.is_file() && path.extension().unwrap() == "trace" {
+                        let trace_name = path.to_string_lossy().to_string();
+                        let trace_name = trace_name.split('.').nth_back(1).unwrap();
+
+                        Some(TraceTestCase {
+                            test_path: test_path.to_string_lossy().to_string(),
+                            expected_path: path,
+                            test_case_function: trace_name.to_string(),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            trace_test_cases.push(trace_files);
+        });
+
+        let trace_test_cases: Vec<_> = trace_test_cases.into_iter().flatten().collect();
+        trace_test_cases
+    }
+
     #[test]
     fn test_debugger_traces() -> eyre::Result<()> {
         let timestamp = std::time::SystemTime::now()
@@ -1384,59 +1755,103 @@ mod tests {
         let workspace_path_string = std::env::var("CARGO_MANIFEST_DIR")
             .expect("CARGO_MANIFEST_DIR not set")
             + "/src/testcases";
-
         let workspace_path = workspace_path_string.as_str();
-        let test_dir = Path::new(workspace_path).join("test");
 
-        for entry in fs::read_dir(test_dir).unwrap() {
-            let path = entry.unwrap().path();
+        let filter_trace = std::env::var("FILTER_TRACE").unwrap_or_default();
 
-            if path.is_file() && path.extension().unwrap() == "sol" {
-                // the trace file is the name of the file with .trace extension
-                let expected_path = path.with_extension("trace");
-
-                // use as test path for the output command the relative path with respect to the workspace path
-                let test_path = path.strip_prefix(workspace_path).unwrap();
-
-                // write the metadata information
-                let log_output_dir = format!("trace/{}", timestamp);
-                std::fs::create_dir_all(&log_output_dir)?;
-
-                let debug_trace_path = {
-                    let path = std::path::absolute(format!("{}/forge_trace.json", log_output_dir))
-                        .expect("Failed to get absolute path");
-                    path.to_string_lossy().into_owned()
-                };
-
-                let forge = Forge::debug(
-                    "test_main",
-                    test_path.to_str().unwrap(),
-                    debug_trace_path.as_str(),
-                );
-                let _ = execute_command(workspace_path, forge).unwrap();
-
-                let debug_trace =
-                    generate_trace(workspace_path, debug_trace_path.as_str()).unwrap();
-
-                // save the debug trace
-                let debug_trace_json = serde_json::to_string(&debug_trace).unwrap();
-                std::fs::write(
-                    format!("{}/debug_trace.json", log_output_dir),
-                    debug_trace_json,
-                )?;
-
-                let formatted = debug_trace.to_debug_format(workspace_path);
-                std::fs::write(
-                    format!("{}/debug_trace.txt", log_output_dir),
-                    formatted.clone(),
-                )?;
-
-                let expected = fs::read_to_string(expected_path).unwrap();
-
-                assert_eq!(formatted, expected);
+        let test_traces = get_trace_test_cases(workspace_path);
+        for trace_test_case in test_traces {
+            // If the FILTER_TRACE env variable is set, only run the trace for the function
+            // specified there.
+            if !filter_trace.is_empty() && filter_trace != trace_test_case.test_case_function {
+                continue;
             }
+
+            // write the metadata information
+            let log_output_dir = format!("trace/{}", timestamp);
+            std::fs::create_dir_all(&log_output_dir)?;
+
+            let debug_trace_path = {
+                let path = std::path::absolute(format!("{}/forge_trace.json", log_output_dir))
+                    .expect("Failed to get absolute path");
+                path.to_string_lossy().into_owned()
+            };
+
+            let forge = Forge::debug(
+                &trace_test_case.test_case_function,
+                &trace_test_case.test_path,
+                debug_trace_path.as_str(),
+            );
+            let _ = execute_command(workspace_path, forge).unwrap();
+            let (debug_trace, trace_context) =
+                generate_trace(workspace_path, debug_trace_path.as_str()).unwrap();
+
+            // save the debug trace
+            let debug_trace_json = serde_json::to_string(&debug_trace).unwrap();
+            std::fs::write(
+                format!("{}/debug_trace.json", log_output_dir),
+                debug_trace_json,
+            )?;
+
+            let formatted = debug_trace.to_debug_format(workspace_path, &trace_context);
+            std::fs::write(
+                format!("{}/debug_trace.txt", log_output_dir),
+                formatted.clone(),
+            )?;
+
+            let expected = fs::read_to_string(trace_test_case.expected_path).unwrap();
+
+            println!("{}", formatted);
+            println!("{}", expected);
+
+            assert_eq!(formatted, expected);
         }
 
         Ok(())
     }
+
+    const SKIP_TRACE_LIST: &[&str] = &[
+        "VM_ADDRESS",
+        "CONSOLE",
+        "CREATE2_FACTORY",
+        "DEFAULT_SENDER",
+        "DEFAULT_TEST_CONTRACT",
+        "MULTICALL3_ADDRESS",
+        "SECP256K1_ORDER",
+        "UINT256_MAX",
+        "vm",
+        "stdstore",
+        "vm",
+        "_failed",
+        "vm",
+        "stdChainsInitialized",
+        "chains",
+        "defaultRpcUrls",
+        "idToAlias",
+        "fallbackToDefaultRpcUrls",
+        "vm",
+        "UINT256*MAX",
+        "gasMeteringOff",
+        "stdstore",
+        "vm",
+        "CONSOLE2_ADDRESS",
+        "_excludedContracts",
+        "_excludedSenders",
+        "_targetedContracts",
+        "_targetedSenders",
+        "_excludedArtifacts",
+        "_targetedArtifacts",
+        "_targetedArtifactSelectors",
+        "_excludedSelectors",
+        "_targetedSelectors",
+        "_targetedInterfaces",
+        "multicall",
+        "vm",
+        "CONSOLE2_ADDRESS",
+        "INT256_MIN_ABS",
+        "SECP256K1_ORDER",
+        "UINT256_MAX",
+        "CREATE2_FACTORY",
+        "IS_TEST",
+    ];
 }
