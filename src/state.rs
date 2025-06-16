@@ -10,11 +10,9 @@ use foundry_compilers::artifacts::ast::{Ast, Node, NodeType};
 use foundry_compilers::artifacts::sourcemap::parse;
 use foundry_compilers::artifacts::BytecodeObject;
 use foundry_compilers::artifacts::CompactBytecode;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::env::var;
 use std::io::Write;
@@ -1146,38 +1144,9 @@ impl StateReference {
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct TypeNode {
-    #[serde(rename = "nodeType")]
-    pub node_type: TypeNodeType,
-
-    /// Node attributes that were not deserialized.
-    #[serde(flatten)]
-    pub other: BTreeMap<String, serde_json::Value>,
-}
-
-impl TypeNode {
-    /// Deserialize a serialized node attribute.
-    pub fn attribute<D: DeserializeOwned>(&self, key: impl AsRef<str>) -> Option<D> {
-        // TODO: Can we avoid this clone?
-        self.other
-            .get(key.as_ref())
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-    }
-}
-
-#[derive(Deserialize, Debug)]
-enum TypeNodeType {
-    UserDefinedTypeName,
-    ElementaryTypeName,
-    Mapping,
-    ArrayTypeName,
-    Literal,
-}
-
-fn parse_variable_declaration_type(typ: &TypeNode, structs: &HashMap<usize, Node>) -> Type {
-    match typ.node_type {
-        TypeNodeType::UserDefinedTypeName => {
+fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -> Type {
+    match &typ.node_type {
+        NodeType::UserDefinedTypeName => {
             let reference_declaration = typ.attribute::<usize>("referencedDeclaration").unwrap();
             let struct_declaration = structs.get(&reference_declaration).unwrap();
 
@@ -1190,7 +1159,7 @@ fn parse_variable_declaration_type(typ: &TypeNode, structs: &HashMap<usize, Node
             for member in members {
                 let name = member.attribute::<String>("name").unwrap();
 
-                let type_name = member.attribute::<TypeNode>("typeName").unwrap();
+                let type_name = member.attribute::<Node>("typeName").unwrap();
                 let type_node = parse_variable_declaration_type(&type_name, structs);
 
                 inner_types.push((name, type_node));
@@ -1198,7 +1167,7 @@ fn parse_variable_declaration_type(typ: &TypeNode, structs: &HashMap<usize, Node
 
             Type::Tuple(TypeTuple { types: inner_types })
         }
-        TypeNodeType::ElementaryTypeName => {
+        NodeType::ElementaryTypeName => {
             let name: String = typ.attribute("name").unwrap();
             let name = name.as_str();
 
@@ -1230,7 +1199,7 @@ fn parse_variable_declaration_type(typ: &TypeNode, structs: &HashMap<usize, Node
                 }
             }
         }
-        TypeNodeType::Mapping => {
+        NodeType::Mapping => {
             let key_type = typ.attribute("keyType").unwrap();
             let value_type = typ.attribute("valueType").unwrap();
 
@@ -1242,11 +1211,11 @@ fn parse_variable_declaration_type(typ: &TypeNode, structs: &HashMap<usize, Node
                 value: Box::new(two),
             })
         }
-        TypeNodeType::ArrayTypeName => {
+        NodeType::ArrayTypeName => {
             let base_type = typ.attribute("baseType").unwrap();
             let inner_type = parse_variable_declaration_type(&base_type, structs);
 
-            let length = match typ.attribute::<TypeNode>("length") {
+            let length = match typ.attribute::<Node>("length") {
                 Some(node) => {
                     let value = node.attribute::<String>("value").unwrap();
                     Some(value.parse::<u16>().unwrap())
@@ -1259,7 +1228,7 @@ fn parse_variable_declaration_type(typ: &TypeNode, structs: &HashMap<usize, Node
                 size: length,
             })
         }
-        TypeNodeType::Literal => {
+        _ => {
             unreachable!()
         }
     }
@@ -1283,8 +1252,7 @@ fn extract_state_variables(ast: &Ast) -> Vec<(String, Type)> {
     for node in ast.nodes.iter() {
         for child in node.nodes.iter() {
             if child.node_type == NodeType::VariableDeclaration {
-                let typ: TypeNode =
-                    serde_json::from_value(child.other.get("typeName").unwrap().clone()).unwrap();
+                let typ = child.attribute::<Node>("typeName").unwrap();
 
                 let ty = parse_variable_declaration_type(&typ, &structs);
                 let name = child.attribute::<String>("name").unwrap();
@@ -1381,8 +1349,7 @@ fn extract_non_state_variables(ast: &Ast, bytecode: CompactBytecode) -> HashMap<
             .filter(|(_, elem)| elem.offset() == start && elem.length() == length)
             .collect::<Vec<_>>();
 
-        let typ: TypeNode =
-            serde_json::from_value(node.other.get("typeName").unwrap().clone()).unwrap();
+        let typ = node.attribute::<Node>("typeName").unwrap();
 
         let ty = parse_variable_declaration_type(&typ, &structs);
         let name = node.attribute::<String>("name").unwrap();
