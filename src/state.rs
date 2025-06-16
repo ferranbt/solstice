@@ -1146,7 +1146,7 @@ impl StateReference {
 
 fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -> Type {
     match &typ.node_type {
-        NodeType::Other(name) if name == "UserDefinedTypeName" => {
+        NodeType::UserDefinedTypeName => {
             let reference_declaration = typ.attribute::<usize>("referencedDeclaration").unwrap();
             let struct_declaration = structs.get(&reference_declaration).unwrap();
 
@@ -1199,7 +1199,7 @@ fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -
                 }
             }
         }
-        NodeType::Other(name) if name == "Mapping" => {
+        NodeType::Mapping => {
             let key_type = typ.attribute("keyType").unwrap();
             let value_type = typ.attribute("valueType").unwrap();
 
@@ -1211,7 +1211,7 @@ fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -
                 value: Box::new(two),
             })
         }
-        NodeType::Other(name) if name == "ArrayTypeName" => {
+        NodeType::ArrayTypeName => {
             let base_type = typ.attribute("baseType").unwrap();
             let inner_type = parse_variable_declaration_type(&base_type, structs);
 
