@@ -1924,7 +1924,7 @@ mod tests {
         FatalError(String),
     }
 
-    const DEFAULT_NUM_FUZZ_TESTS: usize = 32;
+    const DEFAULT_NUM_FUZZ_TESTS: usize = 100;
 
     impl TestHarness {
         const RECOVERABLE_ERRORS: &'static [&'static str] = &[

@@ -23,5 +23,5 @@ jobs:
         run: sudo ./scripts/ci/install-solc.sh
       - name: Run tests
         run: |
-          export NUM_TESTS=100
+          export NUM_TESTS=200
           cargo test
