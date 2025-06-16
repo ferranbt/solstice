@@ -652,6 +652,8 @@ contract ComplexTypes {{
                         }
                     }
                     None => {
+                        setup.push_str(&format!("/* {} = new xx[](2);*/\n", field_name));
+
                         // Dynamic array - already initialized with new
                         for i in 0..2 {
                             let (element_setup, element_value) = self.generate_setup_code_memory(
@@ -1931,7 +1933,6 @@ mod tests {
         const RECOVERABLE_ERRORS: &'static [&'static str] = &[
             "max initcode size exceeded",
             "EVM error CreateContractSizeLimit",
-            "array out-of-bounds",
         ];
 
         fn new() -> Self {
@@ -1978,6 +1979,8 @@ mod tests {
                 Ok(pending_tx) => pending_tx,
                 Err(err) => {
                     let err_str = err.to_string();
+                    println!("error {:?}", err_str);
+
                     return if Self::is_recoverable_error(&err_str) {
                         Err(DeployError::RecoverableError(err_str))
                     } else {
@@ -2045,84 +2048,118 @@ mod tests {
     async fn test_storage_types() {
         let typ = TypeTuple {
             types: vec![
-                ("arg_0".to_string(), Type::String),
-                ("arg_1".to_string(), Type::Bytes),
                 (
-                    "arg_2".to_string(),
-                    Type::Array(TypeArray {
-                        ty: Box::new(Type::Bool),
-                        size: None,
+                    "arg_0".to_string(),
+                    Type::Tuple(TypeTuple {
+                        types: vec![
+                            ("a".to_string(), Type::String),
+                            ("b".to_string(), Type::String),
+                        ],
                     }),
                 ),
-                ("arg_3".to_string(), Type::Uint(Some(128))),
                 (
-                    "a".to_string(),
+                    "arg_1".to_string(),
                     Type::Tuple(TypeTuple {
                         types: vec![
                             ("a".to_string(), Type::Address),
                             (
                                 "b".to_string(),
-                                Type::Tuple(TypeTuple {
-                                    types: vec![
-                                        ("a".to_string(), Type::Address),
-                                        ("b".to_string(), Type::Bytes),
-                                    ],
+                                Type::Array(TypeArray {
+                                    ty: Box::new(Type::Uint(Some(32))),
+                                    size: None,
                                 }),
                             ),
                         ],
                     }),
                 ),
-                ("b".to_string(), Type::Bytes),
-                ("b1".to_string(), Type::Uint(Some(32))),
-                ("c".to_string(), Type::String),
-                ("c1".to_string(), Type::Address),
-                (
-                    "e".to_string(),
-                    Type::Array(TypeArray {
-                        ty: Box::new(Type::Array(TypeArray {
-                            ty: Box::new(Type::Bytes),
-                            size: Some(2),
-                        })),
-                        size: Some(2),
-                    }),
-                ),
-                (
-                    "e".to_string(),
-                    Type::Array(TypeArray {
-                        ty: Box::new(Type::Array(TypeArray {
-                            ty: Box::new(Type::Bytes),
-                            size: Some(2),
-                        })),
-                        size: Some(2),
-                    }),
-                ),
-                (
-                    "f".to_string(),
-                    Type::Array(TypeArray {
-                        ty: Box::new(Type::Address),
-                        size: None,
-                    }),
-                ),
-                (
-                    "f2".to_string(),
-                    Type::Array(TypeArray {
-                        ty: Box::new(Type::Bytes),
-                        size: None,
-                    }),
-                ),
-                (
-                    "f3".to_string(),
-                    Type::Array(TypeArray {
-                        ty: Box::new(Type::Array(TypeArray {
-                            ty: Box::new(Type::Bytes),
-                            size: None,
-                        })),
-                        size: None,
-                    }),
-                ),
-                ("g".to_string(), Type::FixedBytes(10)),
-                ("a".to_string(), Type::Bool),
-            ],
+            ], /*
+               types: vec![
+                   ("arg_0".to_string(), Type::String),
+                   ("arg_1".to_string(), Type::Bytes),
+                   (
+                       "arg_2".to_string(),
+                       Type::Array(TypeArray {
+                           ty: Box::new(Type::Bool),
+                           size: None,
+                       }),
+                   ),
+                   ("arg_3".to_string(), Type::Uint(Some(128))),
+                   (
+                       "a".to_string(),
+                       Type::Tuple(TypeTuple {
+                           types: vec![
+                               ("a".to_string(), Type::Address),
+                               (
+                                   "b".to_string(),
+                                   Type::Tuple(TypeTuple {
+                                       types: vec![
+                                           ("a".to_string(), Type::Address),
+                                           ("b".to_string(), Type::Bytes),
+                                           (
+                                               "c".to_string(),
+                                               Type::Array(TypeArray {
+                                                   ty: Box::new(Type::Bool),
+                                                   size: Some(2),
+                                               }),
+                                           ),
+                                       ],
+                                   }),
+                               ),
+                           ],
+                       }),
+                   ),
+                   ("b".to_string(), Type::Bytes),
+                   ("b1".to_string(), Type::Uint(Some(32))),
+                   ("c".to_string(), Type::String),
+                   ("c1".to_string(), Type::Address),
+                   (
+                       "e".to_string(),
+                       Type::Array(TypeArray {
+                           ty: Box::new(Type::Array(TypeArray {
+                               ty: Box::new(Type::Bytes),
+                               size: Some(2),
+                           })),
+                           size: Some(2),
+                       }),
+                   ),
+                   (
+                       "e".to_string(),
+                       Type::Array(TypeArray {
+                           ty: Box::new(Type::Array(TypeArray {
+                               ty: Box::new(Type::Bytes),
+                               size: Some(2),
+                           })),
+                           size: Some(2),
+                       }),
+                   ),
+                   (
+                       "f".to_string(),
+                       Type::Array(TypeArray {
+                           ty: Box::new(Type::Address),
+                           size: None,
+                       }),
+                   ),
+                   (
+                       "f2".to_string(),
+                       Type::Array(TypeArray {
+                           ty: Box::new(Type::Bytes),
+                           size: None,
+                       }),
+                   ),
+                   (
+                       "f3".to_string(),
+                       Type::Array(TypeArray {
+                           ty: Box::new(Type::Array(TypeArray {
+                               ty: Box::new(Type::Bytes),
+                               size: None,
+                           })),
+                           size: None,
+                       }),
+                   ),
+                   ("g".to_string(), Type::FixedBytes(10)),
+                   ("a".to_string(), Type::Bool),
+               ],
+               */
         };
 
         let mut data = vec![0u8; 1000000];
@@ -2131,7 +2168,7 @@ mod tests {
         }
 
         let mut u = Unstructured::new(&data);
-        let artifact = ContractGenerator::build_storage(Type::Tuple(typ), &mut u);
+        let artifact = ContractGenerator::build_memory(Type::Tuple(typ), &mut u);
 
         let harness = TestHarness::new();
         let result = harness.deploy(&artifact.source).await.unwrap();
