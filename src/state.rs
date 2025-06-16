@@ -1745,7 +1745,7 @@ mod tests {
     };
     use alloy_provider::network::{Ethereum, EthereumWallet, TransactionBuilder};
     use alloy_provider::{ext::DebugApi, Provider, ProviderBuilder};
-    use alloy_provider::{Identity, RootProvider};
+    use alloy_provider::{Identity, RootProvider, WalletProvider};
     use alloy_rpc_types::TransactionRequest;
     use alloy_rpc_types_trace::geth::{
         DefaultFrame, GethDebugTracingOptions, GethDefaultTracingOptions,
@@ -1924,6 +1924,8 @@ mod tests {
         FatalError(String),
     }
 
+    const DEFAULT_NUM_FUZZ_TESTS: usize = 32;
+
     impl TestHarness {
         const RECOVERABLE_ERRORS: &'static [&'static str] = &[
             "max initcode size exceeded",
@@ -1946,18 +1948,27 @@ mod tests {
             let provider = self.provider.clone();
             let contract_artifact = compile_contract(&source).unwrap();
 
+            let signer_address = provider.default_signer_address();
+
             println!("source {}", source);
 
-            // Deploy the `Counter` contract from bytecode at runtime.
-            let tx = TransactionRequest::default().with_deploy_code(contract_artifact.bytecode());
+            // After updating to the latest version of alloy I cannot use the recommended filters
+            // to set the nonce, they return incorrect values, so doing it manually for now.
+            let nonce = provider
+                .get_transaction_count(signer_address)
+                .pending()
+                .await
+                .unwrap();
+
+            let tx = TransactionRequest::default()
+                .nonce(nonce)
+                .with_deploy_code(contract_artifact.bytecode());
 
             // Deploy the contract.
             let deploy_pending_tx = match provider.send_transaction(tx).await {
                 Ok(pending_tx) => pending_tx,
                 Err(err) => {
                     let err_str = err.to_string();
-                    println!("err_str 0 {:?}", err_str);
-
                     return if Self::is_recoverable_error(&err_str) {
                         Err(DeployError::RecoverableError(err_str))
                     } else {
@@ -1970,15 +1981,12 @@ mod tests {
             let contract_address = receipt.contract_address.unwrap();
 
             let contract = Example1::new(contract_address, &provider);
-            let builder = contract.start();
+            let builder_tx = contract.start().into_transaction_request().nonce(nonce + 1);
 
-            println!("builder call {:?}", builder);
-
-            let pending_tx = match builder.send().await {
+            let pending_tx = match provider.send_transaction(builder_tx).await {
                 Ok(pending_tx) => pending_tx,
                 Err(err) => {
                     let err_str = err.to_string();
-                    println!("err str {:?}", err_str);
 
                     return if Self::is_recoverable_error(&err_str) {
                         Err(DeployError::RecoverableError(err_str))
@@ -2018,7 +2026,7 @@ mod tests {
         let num = var("NUM_TESTS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(1000);
+            .unwrap_or(DEFAULT_NUM_FUZZ_TESTS);
 
         for i in 0..num {
             println!("generting {} {}", i, num);
@@ -2153,7 +2161,7 @@ mod tests {
         let num = var("NUM_TESTS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(1000);
+            .unwrap_or(DEFAULT_NUM_FUZZ_TESTS);
 
         for i in 0..num {
             println!("generting {} {}", i, num);
@@ -2189,7 +2197,7 @@ mod tests {
         let num = var("NUM_TESTS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(1000);
+            .unwrap_or(DEFAULT_NUM_FUZZ_TESTS);
 
         for i in 0..num {
             println!("generating {} {}", i, num);
