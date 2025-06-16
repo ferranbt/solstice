@@ -296,7 +296,7 @@ contract ComplexTypes {{
     {}
     {}
 
-    function setup() public {{
+    function start() public {{
         {}
     }}
 }}
@@ -618,7 +618,7 @@ pragma solidity ^0.8.0;
 contract ComplexTypes {{
     {}
 
-    function setup() public {{
+    function start() public {{
 {}
     }}
 }}
@@ -732,7 +732,7 @@ contract ComplexTypes {{
 pragma solidity ^0.8.0;
 
 contract ComplexTypes {{
-    function setup() public {{
+    function start() public {{
         // Stack variables declarations
 {}
         // Stack variables assignments
@@ -1769,7 +1769,7 @@ mod tests {
         #[allow(missing_docs)]
         #[sol(rpc)]
         contract Example1 {
-            function setup() public {}
+            function start() public {}
         }
     }
 
@@ -1956,6 +1956,8 @@ mod tests {
                 Ok(pending_tx) => pending_tx,
                 Err(err) => {
                     let err_str = err.to_string();
+                    println!("err_str 0 {:?}", err_str);
+
                     return if Self::is_recoverable_error(&err_str) {
                         Err(DeployError::RecoverableError(err_str))
                     } else {
@@ -1968,12 +1970,16 @@ mod tests {
             let contract_address = receipt.contract_address.unwrap();
 
             let contract = Example1::new(contract_address, &provider);
-            let builder = contract.setup();
+            let builder = contract.start();
+
+            println!("builder call {:?}", builder);
 
             let pending_tx = match builder.send().await {
                 Ok(pending_tx) => pending_tx,
                 Err(err) => {
                     let err_str = err.to_string();
+                    println!("err str {:?}", err_str);
+
                     return if Self::is_recoverable_error(&err_str) {
                         Err(DeployError::RecoverableError(err_str))
                     } else {
