@@ -1,0 +1,2 @@
+[FUNC] test_with_struct_value (test/example.t.sol:41)
+[STMT] 42:8 scope=[value, s]

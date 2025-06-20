@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {Example, ExampleTwoParents} from "../src/example1.sol";
+import {Example, ExampleTwoParents, Struct1} from "../src/example1.sol";
 
 contract FooTest is Test {
     uint256 value;
@@ -36,5 +36,11 @@ contract FooTest is Test {
 
     function test_double_parent() external {
         ExampleTwoParents example = new ExampleTwoParents();
+    }
+
+    function test_with_struct_value() external {
+        Struct1 memory s = Struct1({
+            value: 1
+        });
     }
 }

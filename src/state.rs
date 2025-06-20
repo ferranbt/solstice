@@ -1150,6 +1150,11 @@ fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -
             let reference_declaration = typ.attribute::<usize>("referencedDeclaration").unwrap();
             let struct_declaration = structs.get(&reference_declaration).unwrap();
 
+            if struct_declaration.node_type == NodeType::ContractDefinition {
+                // If it references a contract, store like an address for now
+                return Type::Address;
+            }
+
             let members = struct_declaration
                 .attribute::<Vec<Node>>("members")
                 .unwrap();

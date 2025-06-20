@@ -42,3 +42,7 @@ contract ExampleTwoParents is ParentWithConstructor {
         value2 = 10;
     }
 }
+
+struct Struct1 {
+    uint256 value;
+}
