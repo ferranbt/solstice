@@ -90,7 +90,11 @@ fn generate_debug_units(
     let config: ProjectPathsConfig<SolData> =
         ProjectPathsConfig::dapptools(Path::new(root_path)).unwrap();
 
-    let cache = CompilerCache::<SolcSettings>::read(&config.cache).unwrap();
+    let cache = CompilerCache::<SolcSettings>::read(&config.cache).map_err(|e| {
+        // TODO: Add custom error enum
+        println!("error reading cache {:?}", e);
+        e
+    })?;
 
     let mut trace_context = TraceContext::new();
 
@@ -112,8 +116,9 @@ fn generate_debug_units(
     for local_file_path in topological_sort {
         let cache_entry = cache.files.get(&local_file_path).unwrap();
         let source_name = cache_entry.source_name.clone();
+        let source_absolute_path = root_path.join(source_name.clone());
 
-        let source = fs::read_to_string(root_path.join(source_name.clone())).unwrap();
+        let source = fs::read_to_string(source_absolute_path.clone()).unwrap();
 
         for (_, mut artifact) in cache_entry.artifacts.clone() {
             let (_, xx) = artifact.pop_first().expect("expect something here");
@@ -122,7 +127,10 @@ fn generate_debug_units(
             let absolute_path = config.artifacts.join(cached_artifact.path.clone());
 
             // load the artifact now
-            let artifact = load_artifact(&absolute_path)?;
+            let artifact = load_artifact(&absolute_path).map_err(|e| {
+                println!("error loading artifact {:?} {:?}", absolute_path, e);
+                e
+            })?;
 
             if let Some(ast) = artifact.ast.clone() {
                 // For all the contracts parse and extract struct references into TraceContext
@@ -213,7 +221,7 @@ fn generate_debug_units(
                                 let mut visitor = StatementVisitor::new(
                                     deployed_bytecode,
                                     bytecode,
-                                    source_name.clone().to_string_lossy().to_string(),
+                                    source_absolute_path.to_str().unwrap().to_string(),
                                     source,
                                 );
                                 visitor.visit_contract(&node.clone()).unwrap();
@@ -991,7 +999,20 @@ impl DebugTrace {
         let step = self.steps.get(indx).unwrap();
         step.variables_in_scope
             .iter()
-            .map(|id| self.variables.get(&(*id as u64)).unwrap().clone())
+            .filter_map(|id| match self.variables.get(&(*id as u64)) {
+                Some(var) => {
+                    if is_forge_variable(var.name.as_str()) {
+                        // skip forge variables
+                        None
+                    } else {
+                        Some(var.clone())
+                    }
+                }
+                None => {
+                    println!("variable not found: {}", id);
+                    None
+                }
+            })
             .collect()
     }
 }
@@ -1303,6 +1324,11 @@ pub fn generate_trace(
         }
     }
 
+    for (id, variable) in trace_context.state_variables.clone() {
+        let id = id as u64;
+        variable_definitions.insert(id, variable.clone());
+    }
+
     Ok((
         DebugTrace {
             steps,
@@ -1479,6 +1505,55 @@ impl Forge {
         cmd.clone()
     }
 }
+
+fn is_forge_variable(name: &str) -> bool {
+    SKIP_TRACE_LIST.contains(&name)
+}
+
+const SKIP_TRACE_LIST: &[&str] = &[
+    "VM_ADDRESS",
+    "CONSOLE",
+    "CREATE2_FACTORY",
+    "DEFAULT_SENDER",
+    "DEFAULT_TEST_CONTRACT",
+    "MULTICALL3_ADDRESS",
+    "SECP256K1_ORDER",
+    "UINT256_MAX",
+    "vm",
+    "stdstore",
+    "vm",
+    "_failed",
+    "vm",
+    "stdChainsInitialized",
+    "chains",
+    "defaultRpcUrls",
+    "idToAlias",
+    "fallbackToDefaultRpcUrls",
+    "vm",
+    "UINT256*MAX",
+    "gasMeteringOff",
+    "stdstore",
+    "vm",
+    "CONSOLE2_ADDRESS",
+    "_excludedContracts",
+    "_excludedSenders",
+    "_targetedContracts",
+    "_targetedSenders",
+    "_excludedArtifacts",
+    "_targetedArtifacts",
+    "_targetedArtifactSelectors",
+    "_excludedSelectors",
+    "_targetedSelectors",
+    "_targetedInterfaces",
+    "multicall",
+    "vm",
+    "CONSOLE2_ADDRESS",
+    "INT256_MIN_ABS",
+    "SECP256K1_ORDER",
+    "UINT256_MAX",
+    "CREATE2_FACTORY",
+    "IS_TEST",
+];
 
 #[cfg(test)]
 mod tests {
@@ -1809,49 +1884,4 @@ mod tests {
 
         Ok(())
     }
-
-    const SKIP_TRACE_LIST: &[&str] = &[
-        "VM_ADDRESS",
-        "CONSOLE",
-        "CREATE2_FACTORY",
-        "DEFAULT_SENDER",
-        "DEFAULT_TEST_CONTRACT",
-        "MULTICALL3_ADDRESS",
-        "SECP256K1_ORDER",
-        "UINT256_MAX",
-        "vm",
-        "stdstore",
-        "vm",
-        "_failed",
-        "vm",
-        "stdChainsInitialized",
-        "chains",
-        "defaultRpcUrls",
-        "idToAlias",
-        "fallbackToDefaultRpcUrls",
-        "vm",
-        "UINT256*MAX",
-        "gasMeteringOff",
-        "stdstore",
-        "vm",
-        "CONSOLE2_ADDRESS",
-        "_excludedContracts",
-        "_excludedSenders",
-        "_targetedContracts",
-        "_targetedSenders",
-        "_excludedArtifacts",
-        "_targetedArtifacts",
-        "_targetedArtifactSelectors",
-        "_excludedSelectors",
-        "_targetedSelectors",
-        "_targetedInterfaces",
-        "multicall",
-        "vm",
-        "CONSOLE2_ADDRESS",
-        "INT256_MIN_ABS",
-        "SECP256K1_ORDER",
-        "UINT256_MAX",
-        "CREATE2_FACTORY",
-        "IS_TEST",
-    ];
 }

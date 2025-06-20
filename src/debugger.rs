@@ -161,6 +161,7 @@ impl Service for DapDebugger {
             .enumerate()
             .map(|(i, trace)| {
                 let source_location = trace.location;
+
                 dap::types::StackFrame {
                     id: i as i64,
                     name: format!("Frame {}", i),
