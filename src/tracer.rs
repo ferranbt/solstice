@@ -1507,7 +1507,7 @@ impl Forge {
 }
 
 fn is_forge_variable(name: &str) -> bool {
-    return SKIP_TRACE_LIST.contains(&name);
+    SKIP_TRACE_LIST.contains(&name)
 }
 
 const SKIP_TRACE_LIST: &[&str] = &[
