@@ -92,7 +92,7 @@ fn generate_debug_units(
 
     let cache = CompilerCache::<SolcSettings>::read(&config.cache).map_err(|e| {
         // TODO: Add custom error enum
-        println!("error reading cache {:?}", e);
+        tracing::error!("error reading cache {:?}", e);
         e
     })?;
 
@@ -128,7 +128,7 @@ fn generate_debug_units(
 
             // load the artifact now
             let artifact = load_artifact(&absolute_path).map_err(|e| {
-                println!("error loading artifact {:?} {:?}", absolute_path, e);
+                tracing::error!("error loading artifact {:?} {:?}", absolute_path, e);
                 e
             })?;
 
@@ -237,7 +237,7 @@ fn generate_debug_units(
                     }
                 });
             } else {
-                println!("ast not found")
+                tracing::error!("ast not found");
             }
         }
     }
@@ -1009,7 +1009,7 @@ impl DebugTrace {
                     }
                 }
                 None => {
-                    println!("variable not found: {}", id);
+                    tracing::error!("variable not found: {}", id);
                     None
                 }
             })

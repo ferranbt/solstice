@@ -6,7 +6,6 @@ build = "src/build.rs"
 
 [dependencies]
 chumsky = "0.8.0"
-env_logger = "0.9.0"
 ropey = "1.5.0"
 serde_json = "1.0.78"
 tokio = { version = "1.17.0", features = ["full"] }

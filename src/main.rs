@@ -381,9 +381,10 @@ impl LanguageServer for Backend {
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
-        println!(
+        tracing::info!(
             "execute command {:?} {:?}",
-            params.command, params.arguments
+            params.command,
+            params.arguments
         );
 
         if params.command == "sol.test.file" {
@@ -559,14 +560,14 @@ impl Backend {
 
     async fn parse_file(&self, uri: Url) {
         let workspace = self.workspace.lock().await;
-        println!("workspace in parse file: {}", workspace);
+        tracing::debug!("workspace in parse file: {}", workspace);
 
         let workspace_lib = PathBuf::from(&*workspace)
             .join("lib/forge-std/src")
             .canonicalize()
             .unwrap();
 
-        println!("workspace_lib ...: {}", workspace_lib.to_str().unwrap());
+        tracing::debug!("workspace_lib ...: {}", workspace_lib.to_str().unwrap());
 
         let mut resolver = FileResolver::default();
         for (path, contents) in &self.files.lock().await.text_buffers {
@@ -675,8 +676,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_ansi(false) // Disable ANSI colors
+        .init();
+
     let args = Args::parse();
-    env_logger::init();
 
     let (service, socket) = LspService::build(|client| Backend {
         client,
@@ -687,7 +691,7 @@ async fn main() {
     .finish();
 
     // bind to the pipe to create an async stdin/stdout
-    println!("Pipe: {}", args.socket);
+    tracing::info!("Pipe: {}", args.socket);
 
     let stream = TcpStream::connect("127.0.0.1:1111").await.unwrap();
     let (read, write) = tokio::io::split(stream);
@@ -696,18 +700,18 @@ async fn main() {
 }
 
 fn run_dap_server(workspace_path: &str) -> u64 {
-    println!("Starting DAP server");
+    tracing::info!("Starting DAP server");
     let port = 50051; // Replace with your desired port number
 
     // Bind the listener before spawning the task
     let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
-    println!("==> Server listening on port {}", port);
+    tracing::info!("==> Server listening on port {}", port);
 
     let workspace_path = String::from(workspace_path);
 
     tokio::spawn(async move {
         let (stream, _) = listener.accept().unwrap();
-        println!("==> New connection: {}", stream.peer_addr().unwrap());
+        tracing::info!("==> New connection: {}", stream.peer_addr().unwrap());
 
         let input = BufReader::new(stream.try_clone().unwrap());
         let output = BufWriter::new(stream);
