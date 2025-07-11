@@ -1,6 +1,6 @@
 use builder::DefinitionIndex;
 use built_info::PKG_VERSION;
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use debugger::DapDebugger;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -666,37 +666,52 @@ fn get_range_exclusive(start: usize, end: usize, file: &ast::File) -> Range {
 }
 
 /// Simple program to greet a person
-#[derive(Parser, Debug)]
-#[command(version(PKG_VERSION), about, long_about = None)]
-struct Args {
+#[derive(Args, Debug)]
+struct ServerArgs {
     /// Name of the person to greet
     #[arg(short, long)]
     socket: u64,
 }
 
+#[derive(Parser, Debug)]
+#[command(version(PKG_VERSION), about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Server(ServerArgs),
+}
+
 #[tokio::main]
 async fn main() {
+    let cli = Cli::parse();
+
     tracing_subscriber::fmt()
         .with_ansi(false) // Disable ANSI colors
         .init();
 
-    let args = Args::parse();
+    match cli.command {
+        Commands::Server(args) => {
+            let (service, socket) = LspService::build(|client| Backend {
+                client,
+                files: Mutex::new(Default::default()),
+                workspace: Mutex::new(String::new()),
+                global_cache: Mutex::new(Default::default()),
+            })
+            .finish();
 
-    let (service, socket) = LspService::build(|client| Backend {
-        client,
-        files: Mutex::new(Default::default()),
-        workspace: Mutex::new(String::new()),
-        global_cache: Mutex::new(Default::default()),
-    })
-    .finish();
+            // bind to the pipe to create an async stdin/stdout
+            tracing::info!("Pipe: {}", args.socket);
 
-    // bind to the pipe to create an async stdin/stdout
-    tracing::info!("Pipe: {}", args.socket);
+            let stream = TcpStream::connect("127.0.0.1:1111").await.unwrap();
+            let (read, write) = tokio::io::split(stream);
 
-    let stream = TcpStream::connect("127.0.0.1:1111").await.unwrap();
-    let (read, write) = tokio::io::split(stream);
-
-    Server::new(read, write, socket).serve(service).await;
+            Server::new(read, write, socket).serve(service).await;
+        }
+    }
 }
 
 fn run_dap_server(workspace_path: &str) -> u64 {
