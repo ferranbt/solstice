@@ -302,6 +302,7 @@ impl Display for StatementVisitorError {
             StatementVisitorError::MissingAttribute(attribute_name) => {
                 write!(f, "MissingAttribute: {attribute_name}")
             }
+            #[allow(clippy::uninlined_format_args)]
             StatementVisitorError::IncorrectType(expected, actual) => write!(
                 f,
                 "IncorrectType: expected {:?}, got {:?}",
