@@ -55,55 +55,56 @@ function consoleLog(...args: any[]) {
   outputChannel2.appendLine(args.join(" "));
 }
 
-export async function activate(context: ExtensionContext) { 
+export async function activate(context: ExtensionContext) {
   consoleLog("Activated");
 
-  	// register a configuration provider for 'mock' debug type
-	const provider = new MockConfigurationProvider();
-	context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('mock', provider));
+  // register a configuration provider for 'mock' debug type
+  const provider = new MockConfigurationProvider();
+  context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('mock', provider));
 
-	// register a dynamic configuration provider for 'mock' debug type
-	context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('mock', {
-		provideDebugConfigurations(folder: WorkspaceFolder | undefined): ProviderResult<DebugConfiguration[]> {
-			return [
-				{
-					name: "Dynamic Launch",
-					request: "launch",
-					type: "mock",
-					program: "${file}"
-				},
-				{
-					name: "Another Dynamic Launch",
-					request: "launch",
-					type: "mock",
-					program: "${file}"
-				},
-				{
-					name: "Mock Launch",
-					request: "launch",
-					type: "mock",
-					program: "${file}"
-				}
-			];
-		}
-	}, vscode.DebugConfigurationProviderTriggerKind.Dynamic));
+  // register a dynamic configuration provider for 'mock' debug type
+  context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('mock', {
+    provideDebugConfigurations(folder: WorkspaceFolder | undefined): ProviderResult<DebugConfiguration[]> {
+      return [
+        {
+          name: "Dynamic Launch",
+          request: "launch",
+          type: "mock",
+          program: "${file}"
+        },
+        {
+          name: "Another Dynamic Launch",
+          request: "launch",
+          type: "mock",
+          program: "${file}"
+        },
+        {
+          name: "Mock Launch",
+          request: "launch",
+          type: "mock",
+          program: "${file}"
+        }
+      ];
+    }
+  }, vscode.DebugConfigurationProviderTriggerKind.Dynamic));
 
   // activate debug
   console.log("REGISTERED DEBUG ADAPTER");
   context.subscriptions.push(debug.registerDebugAdapterDescriptorFactory('mock', new MockDebugAdapterNamedPipeServerDescriptorFactory()));
-  
+
   context.subscriptions.push(vscode.commands.registerCommand('extension.mock-debug.getProgramName', config => {
-		return vscode.window.showInputBox({
-			placeHolder: "Please enter the name of a markdown file in the workspace folder",
-			value: "readme.md"
-		});
-	}));
-  
+    return vscode.window.showInputBox({
+      placeHolder: "Please enter the name of a markdown file in the workspace folder",
+      value: "readme.md"
+    });
+  }));
+
   const traceOutputChannel = window.createOutputChannel("Solstice");
   const command = await getServer();
 
   const run: Executable = {
     command,
+    args: ['server'],
     transport: { // test
       kind: TransportKind.socket,
       port: 1111,
@@ -138,7 +139,7 @@ export async function activate(context: ExtensionContext) {
   client = new LanguageClient("Solstice", "solstice", serverOptions, clientOptions);
 
   let outputChannel: vscode.OutputChannel;
-  client.onNotification('custom/logToChannel', (params: {channel: string, message: string}) => {
+  client.onNotification('custom/logToChannel', (params: { channel: string, message: string }) => {
     console.log("......");
     console.log(params);
 
@@ -155,7 +156,7 @@ export async function activate(context: ExtensionContext) {
 
     outputChannel.append("Starting debug session");
     outputChannel.append(JSON.stringify(params));
-    
+
     // start vscode session
     vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], params);
   });
@@ -200,41 +201,41 @@ export function activateInlayHints(ctx: ExtensionContext) {
 
 
 class MockDebugAdapterNamedPipeServerDescriptorFactory implements vscode.DebugAdapterDescriptorFactory {
-	private server?: Net.Server;
+  private server?: Net.Server;
 
-	createDebugAdapterDescriptor(session: vscode.DebugSession, executable: vscode.DebugAdapterExecutable | undefined): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
-		return new vscode.DebugAdapterServer(50051);
-	}
+  createDebugAdapterDescriptor(session: vscode.DebugSession, executable: vscode.DebugAdapterExecutable | undefined): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
+    return new vscode.DebugAdapterServer(50051);
+  }
 }
 
 class MockConfigurationProvider implements vscode.DebugConfigurationProvider {
 
-	/**
-	 * Massage a debug configuration just before a debug session is being launched,
-	 * e.g. add all missing attributes to the debug configuration.
-	 */
-	resolveDebugConfiguration(folder: WorkspaceFolder | undefined, config: DebugConfiguration, token?: CancellationToken): ProviderResult<DebugConfiguration> {
+  /**
+   * Massage a debug configuration just before a debug session is being launched,
+   * e.g. add all missing attributes to the debug configuration.
+   */
+  resolveDebugConfiguration(folder: WorkspaceFolder | undefined, config: DebugConfiguration, token?: CancellationToken): ProviderResult<DebugConfiguration> {
 
-		// if launch.json is missing or empty
-		if (!config.type && !config.request && !config.name) {
-			const editor = vscode.window.activeTextEditor;
-			if (editor && editor.document.languageId === "sol") {
-				config.type = 'mock';
-				config.name = 'Launch';
-				config.request = 'launch';
-				config.program = '${file}';
-				config.stopOnEntry = true;
-			}
-		}
+    // if launch.json is missing or empty
+    if (!config.type && !config.request && !config.name) {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && editor.document.languageId === "sol") {
+        config.type = 'mock';
+        config.name = 'Launch';
+        config.request = 'launch';
+        config.program = '${file}';
+        config.stopOnEntry = true;
+      }
+    }
 
-		if (!config.program) {
-			return vscode.window.showInformationMessage("Cannot find a program to debug").then(_ => {
-				return undefined;	// abort launch
-			});
-		}
+    if (!config.program) {
+      return vscode.window.showInformationMessage("Cannot find a program to debug").then(_ => {
+        return undefined;	// abort launch
+      });
+    }
 
-		return config;
-	}
+    return config;
+  }
 }
 
 async function getServer(): Promise<string> {
@@ -260,7 +261,7 @@ async function getServer(): Promise<string> {
   // Try to find the latest release version of the 'solstice' executable
   let latestSolsticeVersion = await getLatestReleaseVersion();
   consoleLog('Remote solstice version', latestSolsticeVersion);
-  
+
   // Try to find the 'solstice' executable in the $HOME/.solstice directory
   const home = os.homedir();
 
@@ -283,16 +284,16 @@ async function getServer(): Promise<string> {
 }
 
 function executableFileExists(filePath: string): boolean {
-	let exists = true;
-	try {
-		exists = fs.statSync(filePath).isFile();
-		if (exists) {
-			fs.accessSync(filePath, fs.constants.F_OK | fs.constants.X_OK);
-		}
-	} catch (e) {
-		exists = false;
-	}
-	return exists;
+  let exists = true;
+  try {
+    exists = fs.statSync(filePath).isFile();
+    if (exists) {
+      fs.accessSync(filePath, fs.constants.F_OK | fs.constants.X_OK);
+    }
+  } catch (e) {
+    exists = false;
+  }
+  return exists;
 }
 
 // getSolsticeVersion executes the solstice executable with the --version flag and returns the version
@@ -334,7 +335,7 @@ async function downloadSolsticeRelease(solsticePath: string, version: string) {
   const platform = process.platform;
   const arch = process.arch;
   let binaryName = '';
-  
+
   if (platform === 'darwin' && arch === 'arm64') {
     binaryName = `solstice-${version}-aarch64-apple-darwin.tar.gz`;
   } else if (platform === 'linux' && arch === 'x64') {

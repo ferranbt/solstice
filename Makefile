@@ -6,5 +6,8 @@ FEATURES ?=
 
 .PHONY: lint
 lint: ## Run the linters
+	cargo clippy -- -D warnings
+
+.PHONY: check_format
+check_format: ## Check if the code is formatted
 	cargo fmt -- --check
-	cargo clippy --features "$(FEATURES)" -- -D warnings

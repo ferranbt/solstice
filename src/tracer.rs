@@ -300,8 +300,9 @@ impl Display for StatementVisitorError {
         match self {
             StatementVisitorError::ParseError => write!(f, "ParseError"),
             StatementVisitorError::MissingAttribute(attribute_name) => {
-                write!(f, "MissingAttribute: {}", attribute_name)
+                write!(f, "MissingAttribute: {attribute_name}")
             }
+            #[allow(clippy::uninlined_format_args)]
             StatementVisitorError::IncorrectType(expected, actual) => write!(
                 f,
                 "IncorrectType: expected {:?}, got {:?}",
@@ -1465,8 +1466,7 @@ pub fn execute_command(
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         Err(std::io::Error::other(format!(
-            "Forge command failed: {} {} {}",
-            workspace_path, stdout, stderr
+            "Forge command failed: {workspace_path} {stdout} {stderr}"
         )))
     }
 }
