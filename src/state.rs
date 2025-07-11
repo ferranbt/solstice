@@ -14,7 +14,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use std::env::var;
 use std::io::Write;
 use std::process::Command;
 use std::process::Stdio;
@@ -1144,10 +1143,11 @@ impl StateReference {
     }
 }
 
-fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -> Type {
+pub fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -> Type {
     match &typ.node_type {
         NodeType::UserDefinedTypeName => {
             let reference_declaration = typ.attribute::<usize>("referencedDeclaration").unwrap();
+            println!("reference declaration {:?}", reference_declaration);
             let struct_declaration = structs.get(&reference_declaration).unwrap();
 
             if struct_declaration.node_type == NodeType::ContractDefinition {
@@ -1234,7 +1234,7 @@ fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -
             })
         }
         _ => {
-            unreachable!()
+            unreachable!("unknown type name: {:?}", typ.node_type);
         }
     }
 }
@@ -1724,6 +1724,7 @@ mod tests {
     };
     use alloy_sol_types::sol;
     use arbitrary::Unstructured;
+    use std::env::var;
     use thiserror::Error;
 
     type AnvilProvider = FillProvider<

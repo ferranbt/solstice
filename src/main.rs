@@ -36,7 +36,6 @@ mod builder;
 mod dap;
 mod debugger;
 mod graph;
-#[cfg(test)]
 mod state;
 mod tracer;
 

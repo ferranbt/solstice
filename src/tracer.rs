@@ -1,4 +1,5 @@
 use crate::graph::Graph;
+use crate::state::{parse_variable_declaration_type, Type};
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
@@ -24,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
 
+#[derive(Debug, Clone)]
 pub struct TraceContext {
     contract_state_variables: HashMap<usize, Vec<usize>>,
     structs: HashMap<usize, Node>,
@@ -113,6 +115,8 @@ fn generate_debug_units(
     let topological_sort = graph.topological_sort().expect("there should be something");
     let mut debug_unit = HashMap::new();
 
+    println!("topological order: {:?}", topological_sort);
+
     for local_file_path in topological_sort {
         let cache_entry = cache.files.get(&local_file_path).unwrap();
         let source_name = cache_entry.source_name.clone();
@@ -140,19 +144,30 @@ fn generate_debug_units(
                     .filter(|source_node| source_node.node_type == NodeType::ContractDefinition)
                     .for_each(|contract_node| {
                         let mut contract_state_variables = Vec::new();
+                        let name = contract_node.attribute::<String>("name").unwrap();
+
+                        println!("contract name {:?} {:?}", name, contract_node.id.unwrap());
+
+                        // insert the contract as well because it can be referenced by other contracts
+                        // in variable declarations
+                        trace_context
+                            .structs
+                            .insert(contract_node.id.unwrap(), contract_node.clone());
+
                         contract_node.nodes.iter().for_each(|node| {
                             let node_id = node.id.unwrap();
 
                             if node.node_type == NodeType::StructDefinition {
+                                println!("insert struct definition {:?}", node_id);
                                 trace_context.structs.insert(node_id, node.clone());
                             } else if node.node_type == NodeType::VariableDeclaration {
                                 // not sure if I have to filter by stateVariable here
                                 let variable =
-                                    StatementVisitor::build_debug_variable(node).expect("variable");
+                                    StatementVisitor::build_debug_variable(node, &trace_context)
+                                        .expect("variable")
+                                        .unwrap();
 
-                                trace_context
-                                    .state_variables
-                                    .insert(node_id, variable.unwrap());
+                                trace_context.state_variables.insert(node_id, variable);
                                 contract_state_variables.push(node_id);
                             }
                         });
@@ -223,6 +238,7 @@ fn generate_debug_units(
                                     bytecode,
                                     source_absolute_path.to_str().unwrap().to_string(),
                                     source,
+                                    &trace_context,
                                 );
                                 visitor.visit_contract(&node.clone()).unwrap();
 
@@ -276,7 +292,7 @@ impl BytecodeMap {
     }
 }
 
-struct StatementVisitor {
+struct StatementVisitor<'a> {
     pub source: String,
     pub debug_unit: DebugUnit,
 
@@ -285,6 +301,9 @@ struct StatementVisitor {
 
     // reference to the contract node that we are visiting
     pub contract_node: Option<Node>,
+
+    // reference to the trace context
+    pub trace_context: &'a TraceContext,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -327,12 +346,13 @@ impl<T> OptionExt<T> for Option<T> {
 
 type StatementVisitorResult<T> = Result<T, StatementVisitorError>;
 
-impl StatementVisitor {
+impl<'a> StatementVisitor<'a> {
     pub fn new(
         deployed_bytecode: CompactBytecode,
         bytecode: CompactBytecode,
         path: String,
         source: String,
+        trace_context: &'a TraceContext,
     ) -> Self {
         Self {
             source: source.clone(),
@@ -347,6 +367,7 @@ impl StatementVisitor {
                 deployed_bytecode: BytecodeMap::new(&deployed_bytecode),
                 state_variables: Vec::new(),
             },
+            trace_context,
         }
     }
 
@@ -578,7 +599,8 @@ impl StatementVisitor {
                     }
                 }
                 NodeType::VariableDeclarationStatement => {
-                    let var = Self::build_debug_variable(statement)?.expect("variable");
+                    let var = Self::build_debug_variable(statement, self.trace_context)?
+                        .expect("variable");
                     self.debug_unit.variables.push(var.clone());
                     block.variables.push(var.id as usize);
 
@@ -727,14 +749,23 @@ impl StatementVisitor {
         Ok(())
     }
 
-    fn build_debug_variable(node: &Node) -> StatementVisitorResult<Option<Variable>> {
+    fn build_debug_variable(
+        node: &Node,
+        trace_context: &TraceContext,
+    ) -> StatementVisitorResult<Option<Variable>> {
         if let Some(name) = node.attribute("name") {
+            println!("id {:?} name {:?}", node.id.unwrap(), name);
+
+            let type_name = node.attribute::<Node>("typeName").unwrap();
+            let typ = parse_variable_declaration_type(&type_name, &trace_context.structs);
+
             // this is most likely a state variable
             if let Some(id) = node.id {
                 return Ok(Some(Variable {
                     name,
                     id: id as u64,
                     state_variable: true,
+                    typ: None,
                 }));
             }
         } else {
@@ -753,6 +784,7 @@ impl StatementVisitor {
                 name,
                 id: node.id.unwrap() as u64,
                 state_variable: false,
+                typ: None,
             }));
         }
         Ok(None)
@@ -784,7 +816,7 @@ impl StatementVisitor {
                 ));
             }
 
-            if let Some(var) = Self::build_debug_variable(&param)? {
+            if let Some(var) = Self::build_debug_variable(&param, self.trace_context)? {
                 let mut var = var.clone();
                 var.state_variable = false;
 
@@ -1398,6 +1430,7 @@ pub struct Variable {
     pub name: String,
     pub id: u64,
     pub state_variable: bool,
+    pub typ: Option<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1714,6 +1747,7 @@ mod tests {
 
         let workspace_path = workspace_path_string.as_str();
         let test_dir = Path::new(workspace_path).join("syntax");
+        let trace_context = TraceContext::new();
 
         for entry in fs::read_dir(test_dir).unwrap() {
             let path = entry.unwrap().path();
@@ -1734,6 +1768,7 @@ mod tests {
                     bytecode,
                     path.to_string_lossy().to_string(),
                     contract,
+                    &trace_context,
                 );
                 visitor.visit_contract(contract_ast).unwrap();
 
