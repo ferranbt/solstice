@@ -452,6 +452,8 @@ fn update_file_contents(
     }
 }
 
+const TEMP_FORGE_DUMP_PATH: &str = "/tmp/debug_trace.json";
+
 impl Backend {
     async fn send_log(&self, channel: String, message: String) {
         let params = LogParams { channel, message };
@@ -490,7 +492,7 @@ impl Backend {
         let workspace = self.workspace.lock().await;
         let workspace_path = workspace.clone();
 
-        let debug_cmd = Forge::debug(&function_name, &test_path, "/tmp/debug_trace.json");
+        let debug_cmd = Forge::debug(&function_name, &test_path, TEMP_FORGE_DUMP_PATH);
         let output = execute_command(&workspace_path, debug_cmd.clone());
 
         match output {
@@ -665,12 +667,56 @@ fn get_range_exclusive(start: usize, end: usize, file: &ast::File) -> Range {
     get_range(start, end - 1, file)
 }
 
-/// Simple program to greet a person
+/// Start the LSP server
 #[derive(Args, Debug)]
 struct ServerArgs {
     /// Name of the person to greet
     #[arg(short, long)]
     socket: u64,
+}
+
+/// Trace a concrete Solidity test file
+#[derive(Args, Debug)]
+struct TraceArgs {
+    /// Path to the file to trace
+    #[arg(long)]
+    match_test: String,
+
+    /// Path to the file to trace
+    #[arg(long)]
+    match_path: String,
+
+    /// Path to the workspace  
+    /// If not provided, the current directory will be used
+    #[arg(long)]
+    workspace: Option<String>,
+
+    /// Path to store the output of the trace
+    #[arg(long)]
+    dump: Option<String>,
+}
+
+impl TraceArgs {
+    fn run(&self) -> eyre::Result<()> {
+        let workspace_path = self.workspace.clone().unwrap_or_else(|| {
+            // Use the current directory as the workspace path
+            std::env::current_dir()
+                .expect("Failed to get current directory")
+                .to_str()
+                .expect("Failed to convert path to string")
+                .to_string()
+        });
+
+        let debug_cmd = Forge::debug(&self.match_test, &self.match_path, TEMP_FORGE_DUMP_PATH);
+        let _ = execute_command(&workspace_path, debug_cmd.clone())?;
+
+        let (debug_trace, _) = generate_trace(&workspace_path, TEMP_FORGE_DUMP_PATH)?;
+        if let Some(dump_path) = &self.dump {
+            std::fs::write(dump_path, serde_json::to_string(&debug_trace)?)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -683,6 +729,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Server(ServerArgs),
+    Trace(TraceArgs),
 }
 
 #[tokio::main]
@@ -711,6 +758,11 @@ async fn main() {
 
             Server::new(read, write, socket).serve(service).await;
         }
+        Commands::Trace(args) => {
+            if let Err(e) = args.run() {
+                eprintln!("Error running trace: {}", e);
+            }
+        }
     }
 }
 
@@ -731,7 +783,7 @@ fn run_dap_server(workspace_path: &str) -> u64 {
         let input = BufReader::new(stream.try_clone().unwrap());
         let output = BufWriter::new(stream);
 
-        let (debug_trace, _) = generate_trace(&workspace_path, "/tmp/debug_trace.json").unwrap();
+        let (debug_trace, _) = generate_trace(&workspace_path, TEMP_FORGE_DUMP_PATH).unwrap();
 
         let mut server = DapServer::new(input, output);
         server.serve(|client| DapDebugger::new(client, debug_trace));
