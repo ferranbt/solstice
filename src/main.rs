@@ -481,7 +481,7 @@ impl Backend {
             Err(e) => {
                 self.send_log(
                     "Forge Test Error".to_string(),
-                    format!("{} Failed to execute test: {}", debug_cmd, e),
+                    format!("{debug_cmd} Failed to execute test: {e}"),
                 )
                 .await;
             }
@@ -500,7 +500,7 @@ impl Backend {
                 let stdout = String::from_utf8_lossy(&output.stdout);
 
                 // Send both stdout and stderr to the client
-                self.send_log("Forge Test".to_string(), format!("{}", stdout))
+                self.send_log("Forge Test".to_string(), format!("{stdout}"))
                     .await;
 
                 // spawn the dap server
@@ -522,7 +522,7 @@ impl Backend {
             Err(e) => {
                 self.send_log(
                     "Forge Test Error".to_string(),
-                    format!("{} Failed to execute test: {}", "", e),
+                    format!("{debug_cmd} Failed to execute test: {e}"),
                 )
                 .await;
             }
@@ -760,7 +760,7 @@ async fn main() {
         }
         Commands::Trace(args) => {
             if let Err(e) = args.run() {
-                eprintln!("Error running trace: {}", e);
+                eprintln!("Error running trace: {e}");
             }
         }
     }
@@ -771,7 +771,7 @@ fn run_dap_server(workspace_path: &str) -> u64 {
     let port = 50051; // Replace with your desired port number
 
     // Bind the listener before spawning the task
-    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
     tracing::info!("==> Server listening on port {}", port);
 
     let workspace_path = String::from(workspace_path);

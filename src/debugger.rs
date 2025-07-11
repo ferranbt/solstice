@@ -164,13 +164,13 @@ impl Service for DapDebugger {
 
                 dap::types::StackFrame {
                     id: i as i64,
-                    name: format!("Frame {}", i),
+                    name: format!("Frame {i}"),
                     line: source_location.line as i64,
                     column: (source_location.column + 1) as i64,
                     end_line: source_location.end_line.map(|l| l as i64),
                     end_column: source_location.end_column.map(|c| (c + 1) as i64),
                     source: Some(dap::types::Source {
-                        name: Some(format!("Frame {}", i)),
+                        name: Some(format!("Frame {i}")),
                         path: Some(trace.path.clone()),
                         presentation_hint: Some(PresentationHint::Normal),
                         source_reference: None,
