@@ -118,6 +118,8 @@ fn generate_debug_units(
     println!("topological order: {:?}", topological_sort);
 
     for local_file_path in topological_sort {
+        println!("processing file {:?}", local_file_path);
+
         let cache_entry = cache.files.get(&local_file_path).unwrap();
         let source_name = cache_entry.source_name.clone();
         let source_absolute_path = root_path.join(source_name.clone());
@@ -130,6 +132,8 @@ fn generate_debug_units(
 
             let absolute_path = config.artifacts.join(cached_artifact.path.clone());
 
+            println!("loading artifact {:?}", absolute_path);
+
             // load the artifact now
             let artifact = load_artifact(&absolute_path).map_err(|e| {
                 tracing::error!("error loading artifact {:?} {:?}", absolute_path, e);
@@ -139,10 +143,9 @@ fn generate_debug_units(
             if let Some(ast) = artifact.ast.clone() {
                 // For all the contracts parse and extract struct references into TraceContext
                 // TODO: Merge this with the contract visitor.
-                ast.nodes
-                    .iter()
-                    .filter(|source_node| source_node.node_type == NodeType::ContractDefinition)
-                    .for_each(|contract_node| {
+                ast.nodes.iter().for_each(|node| {
+                    if node.node_type == NodeType::ContractDefinition {
+                        let contract_node = node.clone();
                         let mut contract_state_variables = Vec::new();
                         let name = contract_node.attribute::<String>("name").unwrap();
 
@@ -175,7 +178,12 @@ fn generate_debug_units(
                         trace_context
                             .contract_state_variables
                             .insert(contract_node.id.unwrap(), contract_state_variables);
-                    });
+                    } else if node.node_type == NodeType::StructDefinition {
+                        // struct defined outside of a contract
+                        let node_id = node.id.unwrap();
+                        trace_context.structs.insert(node_id, node.clone());
+                    }
+                });
 
                 // check if the absolute_path starts with 'lib/'
                 // for now skip all the libs since we cannot parse them yet
