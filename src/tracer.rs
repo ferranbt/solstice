@@ -1493,7 +1493,6 @@ pub struct Block {
 #[derive(Debug, Clone, Serialize)]
 pub enum VariableLocation {
     Storage,
-    Memory,
     Stack,
 }
 

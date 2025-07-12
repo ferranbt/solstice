@@ -1149,7 +1149,6 @@ pub fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node
     match &typ.node_type {
         NodeType::UserDefinedTypeName => {
             let reference_declaration = typ.attribute::<usize>("referencedDeclaration").unwrap();
-            println!("reference declaration {:?}", reference_declaration);
             let struct_declaration = structs.get(&reference_declaration).unwrap();
 
             if struct_declaration.node_type == NodeType::ContractDefinition {
@@ -1186,8 +1185,12 @@ pub fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node
                 }
             }
 
-            // handle int<bytes> and uint<bytes>
-            if name.starts_with("int") {
+            // handle int, int<bytes>, uint and uint<bytes>
+            if name == "uint" {
+                return Type::Uint(Some(256));
+            } else if name == "int" {
+                return Type::Int(Some(256));
+            } else if name.starts_with("int") {
                 let size = name[3..].parse::<u16>().unwrap();
                 return Type::Int(Some(size));
             } else if name.starts_with("uint") {

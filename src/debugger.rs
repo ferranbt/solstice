@@ -454,10 +454,6 @@ impl Debugger {
                             variables: vec![var],
                         }));
                     }
-                    VariableLocation::Memory => {
-                        tracing::warn!("Variable is in memory, not stack, TODO");
-                        return Ok(None);
-                    }
                     _ => unreachable!("Variable storage handled in the other case"),
                 }
             }
