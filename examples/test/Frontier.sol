@@ -12,7 +12,7 @@ contract FooTest is Test {
     function test_Example() external {
         uint256 value = block.number; // Non-constant value
         value = value + 1;
-        if (value > 10) {
+        if (value < 10) {
             value = value + 1;
         }
         value_storage = 1;

@@ -1,4 +1,6 @@
 use crate::graph::Graph;
+use crate::state::{parse_variable_declaration_type, Type};
+use crate::state::{StateReference, StoragePosition};
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
@@ -24,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
 
+#[derive(Debug, Clone)]
 pub struct TraceContext {
     contract_state_variables: HashMap<usize, Vec<usize>>,
     structs: HashMap<usize, Node>,
@@ -119,6 +122,10 @@ fn generate_debug_units(
         let source_absolute_path = root_path.join(source_name.clone());
 
         let source = fs::read_to_string(source_absolute_path.clone()).unwrap();
+        tracing::info!(
+            "Processing file: {}",
+            source_absolute_path.to_str().unwrap_or("unknown")
+        );
 
         for (_, mut artifact) in cache_entry.artifacts.clone() {
             let (_, xx) = artifact.pop_first().expect("expect something here");
@@ -126,7 +133,12 @@ fn generate_debug_units(
 
             let absolute_path = config.artifacts.join(cached_artifact.path.clone());
 
-            // load the artifact now
+            if !absolute_path.exists() {
+                // it could be that the artifact does not exists yet, Forge would put values in the cache that
+                // are not in the out directory. For example, if you have independent tests (A, B) and debug test A
+                // test B will show up in the cache directory but it will not have an artifact.
+                continue;
+            }
             let artifact = load_artifact(&absolute_path).map_err(|e| {
                 tracing::error!("error loading artifact {:?} {:?}", absolute_path, e);
                 e
@@ -135,11 +147,17 @@ fn generate_debug_units(
             if let Some(ast) = artifact.ast.clone() {
                 // For all the contracts parse and extract struct references into TraceContext
                 // TODO: Merge this with the contract visitor.
-                ast.nodes
-                    .iter()
-                    .filter(|source_node| source_node.node_type == NodeType::ContractDefinition)
-                    .for_each(|contract_node| {
+                ast.nodes.iter().for_each(|node| {
+                    if node.node_type == NodeType::ContractDefinition {
+                        let contract_node = node.clone();
                         let mut contract_state_variables = Vec::new();
+
+                        // insert the contract as well because it can be referenced by other contracts
+                        // in variable declarations
+                        trace_context
+                            .structs
+                            .insert(contract_node.id.unwrap(), contract_node.clone());
+
                         contract_node.nodes.iter().for_each(|node| {
                             let node_id = node.id.unwrap();
 
@@ -148,11 +166,11 @@ fn generate_debug_units(
                             } else if node.node_type == NodeType::VariableDeclaration {
                                 // not sure if I have to filter by stateVariable here
                                 let variable =
-                                    StatementVisitor::build_debug_variable(node).expect("variable");
+                                    StatementVisitor::build_debug_variable(node, &trace_context)
+                                        .expect("variable")
+                                        .unwrap();
 
-                                trace_context
-                                    .state_variables
-                                    .insert(node_id, variable.unwrap());
+                                trace_context.state_variables.insert(node_id, variable);
                                 contract_state_variables.push(node_id);
                             }
                         });
@@ -160,7 +178,12 @@ fn generate_debug_units(
                         trace_context
                             .contract_state_variables
                             .insert(contract_node.id.unwrap(), contract_state_variables);
-                    });
+                    } else if node.node_type == NodeType::StructDefinition {
+                        // struct defined outside of a contract
+                        let node_id = node.id.unwrap();
+                        trace_context.structs.insert(node_id, node.clone());
+                    }
+                });
 
                 // check if the absolute_path starts with 'lib/'
                 // for now skip all the libs since we cannot parse them yet
@@ -223,6 +246,7 @@ fn generate_debug_units(
                                     bytecode,
                                     source_absolute_path.to_str().unwrap().to_string(),
                                     source,
+                                    &trace_context,
                                 );
                                 visitor.visit_contract(&node.clone()).unwrap();
 
@@ -276,7 +300,7 @@ impl BytecodeMap {
     }
 }
 
-struct StatementVisitor {
+struct StatementVisitor<'a> {
     pub source: String,
     pub debug_unit: DebugUnit,
 
@@ -285,6 +309,9 @@ struct StatementVisitor {
 
     // reference to the contract node that we are visiting
     pub contract_node: Option<Node>,
+
+    // reference to the trace context
+    pub trace_context: &'a TraceContext,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -328,12 +355,13 @@ impl<T> OptionExt<T> for Option<T> {
 
 type StatementVisitorResult<T> = Result<T, StatementVisitorError>;
 
-impl StatementVisitor {
+impl<'a> StatementVisitor<'a> {
     pub fn new(
         deployed_bytecode: CompactBytecode,
         bytecode: CompactBytecode,
         path: String,
         source: String,
+        trace_context: &'a TraceContext,
     ) -> Self {
         Self {
             source: source.clone(),
@@ -348,6 +376,7 @@ impl StatementVisitor {
                 deployed_bytecode: BytecodeMap::new(&deployed_bytecode),
                 state_variables: Vec::new(),
             },
+            trace_context,
         }
     }
 
@@ -579,7 +608,8 @@ impl StatementVisitor {
                     }
                 }
                 NodeType::VariableDeclarationStatement => {
-                    let var = Self::build_debug_variable(statement)?.expect("variable");
+                    let var = Self::build_debug_variable(statement, self.trace_context)?
+                        .expect("variable");
                     self.debug_unit.variables.push(var.clone());
                     block.variables.push(var.id as usize);
 
@@ -728,14 +758,25 @@ impl StatementVisitor {
         Ok(())
     }
 
-    fn build_debug_variable(node: &Node) -> StatementVisitorResult<Option<Variable>> {
+    fn build_debug_variable(
+        node: &Node,
+        trace_context: &TraceContext,
+    ) -> StatementVisitorResult<Option<Variable>> {
         if let Some(name) = node.attribute("name") {
+            let type_name = node.attribute::<Node>("typeName").unwrap();
+            let typ = parse_variable_declaration_type(&type_name, &trace_context.structs);
+
+            let is_constant = node.attribute::<bool>("constant").unwrap();
+
             // this is most likely a state variable
             if let Some(id) = node.id {
                 return Ok(Some(Variable {
                     name,
                     id: id as u64,
                     state_variable: true,
+                    location: VariableLocation::Storage,
+                    is_constant,
+                    typ,
                 }));
             }
         } else {
@@ -750,10 +791,18 @@ impl StatementVisitor {
                 .attribute::<String>("name")
                 .ok_or_missing_attribute("name")?;
 
+            let type_name = declaration.attribute::<Node>("typeName").unwrap();
+            let typ = parse_variable_declaration_type(&type_name, &trace_context.structs);
+
+            let is_constant = declaration.attribute::<bool>("constant").unwrap();
+
             return Ok(Some(Variable {
                 name,
                 id: node.id.unwrap() as u64,
                 state_variable: false,
+                location: VariableLocation::Stack, // Assuming memory for non-state variables, TODO: add memory example
+                is_constant,
+                typ,
             }));
         }
         Ok(None)
@@ -785,7 +834,7 @@ impl StatementVisitor {
                 ));
             }
 
-            if let Some(var) = Self::build_debug_variable(&param)? {
+            if let Some(var) = Self::build_debug_variable(&param, self.trace_context)? {
                 let mut var = var.clone();
                 var.state_variable = false;
 
@@ -962,6 +1011,7 @@ pub enum StepKind {
 pub struct DebugTrace {
     pub steps: Vec<DebugStep>,
     pub variables: HashMap<u64, Variable>,
+    pub assignments: HashMap<u64, Assignment>,
 }
 
 #[derive(Debug, Clone)]
@@ -1019,15 +1069,20 @@ impl DebugTrace {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+pub struct StateSnapshot {
+    pub memory: Bytes,
+    pub stack: Vec<Bytes>,
+    pub storage: HashMap<Bytes, Bytes>,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct DebugStep {
     pub location: SourceLocation,
     pub variables_in_scope: Vec<usize>,
     pub path: String,
     pub call_trace: Vec<usize>,
     pub kind: StepKind,
-    pub memory: Bytes,
-    pub stack: Vec<Bytes>,
-    pub storage: HashMap<Bytes, Bytes>,
+    pub state_snapshot: StateSnapshot,
 }
 
 impl From<&DebugStep> for StackFrame {
@@ -1078,6 +1133,7 @@ struct OtherMatchLocation {
     source_location: SourceElement,
     path: String,
     vars_in_scope: Vec<usize>,
+    state_snapshot: StateSnapshot,
 }
 
 pub fn generate_trace(
@@ -1118,17 +1174,17 @@ pub fn generate_trace(
         let debug_unit = debug_units.get(contract).unwrap();
 
         for step in node.steps.iter() {
-            let _memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
-            let _stack: Vec<Bytes> = step
+            let memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
+            let stack: Vec<Bytes> = step
                 .stack
                 .clone()
                 .unwrap()
                 .iter()
-                .map(|b| Bytes::from(b.as_le_bytes().to_vec()))
+                .map(|b| Bytes::from(b.to_be_bytes_vec()))
                 .collect();
 
             // the storage for the current state is before any key has been inserted
-            let _storage = contracts_storage
+            let storage = contracts_storage
                 .get(&step.contract)
                 .unwrap_or(&HashMap::new())
                 .clone();
@@ -1139,8 +1195,8 @@ pub fn generate_trace(
                     .entry(step.contract)
                     .or_insert(HashMap::new())
                     .insert(
-                        Bytes::from(storage_change.key.as_le_bytes().to_vec()),
-                        Bytes::from(storage_change.value.as_le_bytes().to_vec()),
+                        Bytes::from(storage_change.key.to_be_bytes_vec()),
+                        Bytes::from(storage_change.value.to_be_bytes_vec()),
                     );
             }
 
@@ -1174,6 +1230,11 @@ pub fn generate_trace(
                         source_location: source_location.clone(),
                         path: debug_unit_to_test.path.clone(),
                         vars_in_scope: vars,
+                        state_snapshot: StateSnapshot {
+                            stack: stack.clone(),
+                            memory: memory.clone(),
+                            storage: storage.clone(),
+                        },
                     });
                 }
             }
@@ -1193,6 +1254,7 @@ pub fn generate_trace(
                 source_location: Default::default(),
                 path: "".to_string(),
                 vars_in_scope: vec![],
+                state_snapshot: StateSnapshot::default(),
             });
         }
     }
@@ -1220,6 +1282,7 @@ pub fn generate_trace(
                         source_location: func_with_out.source_location.clone(), // we care less about this ones
                         path: func_with_out.path.clone(),
                         vars_in_scope: vec![],
+                        state_snapshot: func_with_out.state_snapshot.clone(),
                     });
                 } else {
                     // otherwise, pick the last element that matches
@@ -1255,6 +1318,8 @@ pub fn generate_trace(
     let mut call_trace = Vec::new();
     let mut expecting_function = true;
 
+    let mut assignments = HashMap::new();
+
     for i in final_matched_locations.iter() {
         let local_call_trace = call_trace.iter().map(|(_, pos)| *pos).collect();
         let path = i.path.clone();
@@ -1277,7 +1342,7 @@ pub fn generate_trace(
                     variables_in_scope: vec![],
                     call_trace: local_call_trace,
                     kind: StepKind::FunctionDefinition(func.name.clone()),
-                    ..Default::default()
+                    state_snapshot: i.state_snapshot.clone(),
                 });
             }
             MatchResult::ConstructorOut => {
@@ -1301,13 +1366,18 @@ pub fn generate_trace(
                     _ => StepKind::Statement,
                 };
 
+                if let InstructionKind::VariableDeclaration(id) = &inst.kind {
+                    let var_id = *id as u64;
+                    assignments.insert(var_id, Assignment::Stack(i.state_snapshot.stack.len() - 2));
+                }
+
                 steps.push(DebugStep {
                     location: inst.location.clone(),
                     path,
                     variables_in_scope: i.vars_in_scope.clone(),
                     call_trace: local_call_trace,
                     kind: stmt_kind,
-                    ..Default::default()
+                    state_snapshot: i.state_snapshot.clone(),
                 });
 
                 if matches!(inst.kind, InstructionKind::FunctionCall) {
@@ -1330,10 +1400,45 @@ pub fn generate_trace(
         variable_definitions.insert(id, variable.clone());
     }
 
+    // we are doing it after the rest to make sure all the variables are included in variable_definitions
+    for debug_unit in debug_units.values() {
+        // compute the assignemnts and offsets for the state variables that are not constants
+        let non_constante_state_variables: Vec<Variable> = debug_unit
+            .state_variables
+            .iter()
+            .flat_map(|id| {
+                let id = *id as u64;
+                let var: Variable = variable_definitions
+                    .get(&id)
+                    .cloned()
+                    .expect("variable not found");
+
+                if var.is_constant {
+                    return None;
+                }
+                Some(var)
+            })
+            .collect();
+
+        // put them in a tuple of the format (String, type) for the StateReference::compute_offsets
+        let state_variables_as_tuple: Vec<(String, Type)> = non_constante_state_variables
+            .iter()
+            .map(|var| (var.name.clone(), var.typ.clone()))
+            .collect();
+
+        let (offsets, _) = StateReference::compute_offsets(state_variables_as_tuple);
+
+        for (var, (_, offset)) in non_constante_state_variables.iter().zip(offsets.iter()) {
+            let var_id = var.id as u64;
+            assignments.insert(var_id, Assignment::Storage(offset.clone()));
+        }
+    }
+
     Ok((
         DebugTrace {
             steps,
             variables: variable_definitions,
+            assignments,
         },
         trace_context,
     ))
@@ -1395,10 +1500,26 @@ pub struct Block {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub enum VariableLocation {
+    Storage,
+    Stack,
+}
+
+// Variable is a parsed representation of the Variable declaration NodeType in the AST.
+#[derive(Debug, Clone, Serialize)]
 pub struct Variable {
     pub name: String,
     pub id: u64,
-    pub state_variable: bool,
+    pub state_variable: bool, // TODO: Replace with location
+    pub location: VariableLocation,
+    pub is_constant: bool,
+    pub typ: Type,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum Assignment {
+    Storage(StoragePosition),
+    Stack(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1751,6 +1872,7 @@ mod tests {
 
         let workspace_path = workspace_path_string.as_str();
         let test_dir = Path::new(workspace_path).join("syntax");
+        let mut trace_context = TraceContext::new();
 
         for entry in fs::read_dir(test_dir).unwrap() {
             let path = entry.unwrap().path();
@@ -1764,6 +1886,13 @@ mod tests {
                 let deployed_bytecode = artifact.compact_bytecode_deployed();
                 let bytecode = artifact.compact_bytecode();
 
+                // populate the trace context with the contract because the Try catch call
+                // references a contract. TODO: we should find a way to do this automatically
+                // in a function to be consumed by this test.
+                artifact.ast.nodes.iter().for_each(|node| {
+                    trace_context.structs.insert(node.id.unwrap(), node.clone());
+                });
+
                 let contract_ast = artifact.ast.nodes.last().unwrap();
 
                 let mut visitor = StatementVisitor::new(
@@ -1771,6 +1900,7 @@ mod tests {
                     bytecode,
                     path.to_string_lossy().to_string(),
                     contract,
+                    &trace_context,
                 );
                 visitor.visit_contract(contract_ast).unwrap();
 
@@ -1877,6 +2007,13 @@ mod tests {
             // specified there.
             if !filter_trace.is_empty() && filter_trace != trace_test_case.test_case_function {
                 continue;
+            }
+
+            // TODO: There is an error when calling forge multiple times, the ast files are
+            // not updated correctly. So, we need to remove the out directory on every test run.
+            let out_dir = Path::new(workspace_path).join("out");
+            if out_dir.exists() {
+                fs::remove_dir_all(&out_dir)?;
             }
 
             // write the metadata information

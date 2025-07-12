@@ -14,7 +14,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use std::env::var;
 use std::io::Write;
 use std::process::Command;
 use std::process::Stdio;
@@ -896,14 +895,14 @@ impl<'a> Arbitrary<'a> for TypeMapping {
     }
 }
 
-struct StateReference {
+pub struct StateReference {
     storage: HashMap<FixedBytes<32>, FixedBytes<32>>,
 }
 
-#[derive(Default, Clone, Debug)]
-struct StoragePosition {
-    slot: FixedBytes<32>,
-    index_in_slot: u32,
+#[derive(Default, Clone, Debug, Serialize, Copy)]
+pub struct StoragePosition {
+    pub slot: FixedBytes<32>,
+    pub index_in_slot: u32,
 }
 
 impl StoragePosition {
@@ -933,11 +932,11 @@ impl StoragePosition {
 const SLOT_SIZE: u32 = 32;
 
 impl StateReference {
-    fn new(storage: HashMap<FixedBytes<32>, FixedBytes<32>>) -> Self {
+    pub fn new(storage: HashMap<FixedBytes<32>, FixedBytes<32>>) -> Self {
         Self { storage }
     }
 
-    fn resolve_type(&self, ty: Type, offset: StoragePosition) -> JsonValue {
+    pub fn resolve_type(&self, ty: Type, offset: StoragePosition) -> JsonValue {
         match ty {
             Type::Address | Type::Bool | Type::FixedBytes(_) | Type::Uint(_) | Type::Int(_) => {
                 let num_bytes = ty.get_bytes();
@@ -1047,7 +1046,9 @@ impl StateReference {
                     let length_bytes = if let Some(bytes) = self.storage.get(&offset.slot) {
                         bytes
                     } else {
-                        panic!("Could not find length at slot {}", hex::encode(offset.slot));
+                        // return an empty array of FixedBytes<32>
+                        let empty = FixedBytes::<32>::default();
+                        &empty.clone()
                     };
                     let length = U256::from_be_bytes(length_bytes.0).as_limbs()[0] as u32;
 
@@ -1144,7 +1145,7 @@ impl StateReference {
     }
 }
 
-fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -> Type {
+pub fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -> Type {
     match &typ.node_type {
         NodeType::UserDefinedTypeName => {
             let reference_declaration = typ.attribute::<usize>("referencedDeclaration").unwrap();
@@ -1184,8 +1185,12 @@ fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -
                 }
             }
 
-            // handle int<bytes> and uint<bytes>
-            if name.starts_with("int") {
+            // handle int, int<bytes>, uint and uint<bytes>
+            if name == "uint" {
+                return Type::Uint(Some(256));
+            } else if name == "int" {
+                return Type::Int(Some(256));
+            } else if name.starts_with("int") {
                 let size = name[3..].parse::<u16>().unwrap();
                 return Type::Int(Some(size));
             } else if name.starts_with("uint") {
@@ -1234,7 +1239,7 @@ fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -
             })
         }
         _ => {
-            unreachable!()
+            unreachable!("unknown type name: {:?}", typ.node_type);
         }
     }
 }
@@ -1724,6 +1729,7 @@ mod tests {
     };
     use alloy_sol_types::sol;
     use arbitrary::Unstructured;
+    use std::env::var;
     use thiserror::Error;
 
     type AnvilProvider = FillProvider<
