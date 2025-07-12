@@ -122,6 +122,10 @@ fn generate_debug_units(
         let source_absolute_path = root_path.join(source_name.clone());
 
         let source = fs::read_to_string(source_absolute_path.clone()).unwrap();
+        tracing::info!(
+            "Processing file: {}",
+            source_absolute_path.to_str().unwrap_or("unknown")
+        );
 
         for (_, mut artifact) in cache_entry.artifacts.clone() {
             let (_, xx) = artifact.pop_first().expect("expect something here");
@@ -129,7 +133,12 @@ fn generate_debug_units(
 
             let absolute_path = config.artifacts.join(cached_artifact.path.clone());
 
-            // load the artifact now
+            if !absolute_path.exists() {
+                // it could be that the artifact does not exists yet, Forge would put values in the cache that
+                // are not in the out directory. For example, if you have independent tests (A, B) and debug test A
+                // test B will show up in the cache directory but it will not have an artifact.
+                continue;
+            }
             let artifact = load_artifact(&absolute_path).map_err(|e| {
                 tracing::error!("error loading artifact {:?} {:?}", absolute_path, e);
                 e
@@ -1863,7 +1872,7 @@ mod tests {
 
         let workspace_path = workspace_path_string.as_str();
         let test_dir = Path::new(workspace_path).join("syntax");
-        let trace_context = TraceContext::new();
+        let mut trace_context = TraceContext::new();
 
         for entry in fs::read_dir(test_dir).unwrap() {
             let path = entry.unwrap().path();
@@ -1876,6 +1885,13 @@ mod tests {
 
                 let deployed_bytecode = artifact.compact_bytecode_deployed();
                 let bytecode = artifact.compact_bytecode();
+
+                // populate the trace context with the contract because the Try catch call
+                // references a contract. TODO: we should find a way to do this automatically
+                // in a function to be consumed by this test.
+                artifact.ast.nodes.iter().for_each(|node| {
+                    trace_context.structs.insert(node.id.unwrap(), node.clone());
+                });
 
                 let contract_ast = artifact.ast.nodes.last().unwrap();
 
