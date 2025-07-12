@@ -1494,7 +1494,14 @@ pub fn execute_command(
     workspace_path: &str,
     args: CommandArgs,
 ) -> std::io::Result<std::process::Output> {
-    let output = Command::new("forge")
+    let forge_command = find_forge_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "'forge' command not found in PATH or common locations",
+        )
+    })?;
+
+    let output = Command::new(forge_command)
         .current_dir(workspace_path)
         .args(args.clone())
         .env("RUST_LOG", "info")
@@ -1510,6 +1517,36 @@ pub fn execute_command(
             "Forge command failed: {workspace_path} {stdout} {stderr}"
         )))
     }
+}
+
+fn find_forge_path() -> Option<String> {
+    // Check if 'forge' command exists in PATH
+    if command_exists("forge") {
+        Some("forge".to_string())
+    } else {
+        // Try to find the forge binary in common locations
+        let paths = [
+            "/usr/local/bin/forge",
+            "/usr/bin/forge",
+            "~/.foundry/bin/forge",
+        ];
+        for path in paths.iter() {
+            let expanded_path = shellexpand::tilde(path).to_string();
+            if Path::new(&expanded_path).exists() {
+                return Some(expanded_path);
+            }
+        }
+        None
+    }
+}
+
+// Check if a command exists in PATH
+fn command_exists(cmd: &str) -> bool {
+    Command::new("which")
+        .arg(cmd)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 pub struct Forge {}
