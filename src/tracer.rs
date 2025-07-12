@@ -1658,6 +1658,9 @@ impl Forge {
             .arg("0")
             .arg("--optimize")
             .arg("false")
+            // https://github.com/foundry-rs/foundry/pull/7358 If we do not pass the 'build-info' flag,
+            // the AST files will not get updated, and we need them up to date to match the AST node IDs.
+            .arg("--build-info")
             .arg("-vvvvv"); // we need to run with this flag to export the storage changes
 
         cmd.clone()
@@ -2008,6 +2011,15 @@ mod tests {
             if !filter_trace.is_empty() && filter_trace != trace_test_case.test_case_function {
                 continue;
             }
+
+            /*
+            // BUG: There is an error when calling forge multiple times, the ast files are
+            // not updated correctly. So, we need to remove the out directory on every test run.
+            let out_dir = Path::new(workspace_path).join("out");
+            if out_dir.exists() {
+                fs::remove_dir_all(&out_dir)?;
+            }
+            */
 
             // write the metadata information
             let log_output_dir = format!("trace/{}", timestamp);
