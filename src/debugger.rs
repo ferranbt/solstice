@@ -1,7 +1,9 @@
+use alloy_primitives::FixedBytes;
 use dap::types::PresentationHint;
 use dap::types::StackFramePresentationhint;
 use dap::types::Thread;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::dap::requests::{
     ContinueArguments, LaunchRequestArguments, SetBreakpointsArguments, StepInArguments,
@@ -10,7 +12,9 @@ use crate::dap::requests::{
 use crate::dap::responses::{SetBreakpointsResponse, ThreadsResponse, VariablesResponse};
 use crate::dap::Client;
 use crate::dap::Service;
-use crate::tracer::{DebugTrace, DebugTraceStep, StepKind, Variable};
+use crate::state::{StateReference, Type};
+use crate::tracer::VariableLocation;
+use crate::tracer::{Assignment, DebugTrace, DebugTraceStep, StepKind, Variable};
 
 pub struct DapDebugger {
     debug_trace: RefCell<Debugger>,
@@ -214,7 +218,37 @@ impl Service for DapDebugger {
         }
     }
 
-    fn variables(&self, _body: VariablesArguments) -> VariablesResponse {
+    fn variables(&self, body: VariablesArguments) -> VariablesResponse {
+        tracing::info!(
+            "Variables request received, id {}",
+            body.variables_reference
+        );
+
+        let res = self
+            .debug_trace
+            .borrow()
+            .get_variable(body.variables_reference as u64);
+
+        match res {
+            Ok(Some(response)) => {
+                tracing::info!(
+                    "Variables response found for id {}",
+                    body.variables_reference
+                );
+                return response;
+            }
+            Ok(None) => {
+                tracing::warn!("No variable found for id {}", body.variables_reference);
+            }
+            Err(err) => {
+                tracing::error!(
+                    "Error retrieving variable for id {}: {}",
+                    body.variables_reference,
+                    err
+                );
+            }
+        };
+
         VariablesResponse { variables: vec![] }
     }
 }
@@ -331,6 +365,103 @@ impl Debugger {
 
     pub fn trace(&self) -> DebugTraceStep {
         self.trace.trace(self.indx)
+    }
+
+    pub fn get_variable(&self, var_id: u64) -> eyre::Result<Option<VariablesResponse>> {
+        let assignment = self.trace.assignments.get(&var_id);
+
+        let assignment: Assignment = if let Some(assignment) = assignment {
+            assignment.clone()
+        } else {
+            tracing::warn!("No assignment found for id {}", var_id);
+            return Ok(None);
+        };
+
+        let step = &self.trace.steps[self.indx];
+
+        let variable = if let Some(variable) = self.trace.variables.get(&var_id) {
+            variable
+        } else {
+            tracing::warn!("No variable found for id {}", var_id);
+            return Ok(None);
+        };
+
+        match assignment {
+            Assignment::Storage(storage_position) => {
+                let contract_storage = &step.state_snapshot.storage;
+
+                let contract_storage: HashMap<FixedBytes<32>, FixedBytes<32>> = contract_storage
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            FixedBytes::right_padding_from(k),
+                            FixedBytes::right_padding_from(v),
+                        )
+                    })
+                    .collect();
+
+                let state_resolver = StateReference::new(contract_storage);
+                let value = state_resolver.resolve_type(variable.typ.clone(), storage_position);
+
+                let var = dap::types::Variable {
+                    name: variable.name.clone(),
+                    value: value.to_string(),
+                    ..Default::default()
+                };
+
+                return Ok(Some(VariablesResponse {
+                    variables: vec![var],
+                }));
+            }
+            Assignment::Stack(index) => {
+                tracing::info!("Variable is in stack, index: {:?}", index);
+
+                let value = match step.state_snapshot.stack.get(index as usize).cloned() {
+                    Some(value) => value,
+                    None => {
+                        return Err(eyre::eyre!("No value found in stack at index {}", index));
+                    }
+                };
+
+                match variable.location {
+                    VariableLocation::Stack => {
+                        tracing::info!("Variable is in stack, value: {:?}", value);
+
+                        let typ_size = variable.typ.get_bytes();
+
+                        // fixed bytes pads to the left and the other elements pads to the right
+                        let value_bytes = match variable.typ {
+                            Type::FixedBytes(_) => value[0..typ_size as usize].to_vec(),
+                            _ => value[32 - typ_size as usize..].to_vec(),
+                        };
+
+                        let value = variable.typ.decode_bytes(&value_bytes).map_err(|e| {
+                            eyre::eyre!(
+                                "Failed to decode variable bytes {:?} with type {:?}: {}",
+                                value_bytes,
+                                variable.typ,
+                                e
+                            )
+                        })?;
+
+                        let var = dap::types::Variable {
+                            name: variable.name.clone(),
+                            value: value.to_string(),
+                            ..Default::default()
+                        };
+
+                        return Ok(Some(VariablesResponse {
+                            variables: vec![var],
+                        }));
+                    }
+                    VariableLocation::Memory => {
+                        tracing::warn!("Variable is in memory, not stack, TODO");
+                        return Ok(None);
+                    }
+                    _ => unreachable!("Variable storage handled in the other case"),
+                }
+            }
+        }
     }
 }
 

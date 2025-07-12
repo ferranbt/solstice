@@ -1,5 +1,6 @@
 use crate::graph::Graph;
 use crate::state::{parse_variable_declaration_type, Type};
+use crate::state::{StateReference, StoragePosition};
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
@@ -115,11 +116,7 @@ fn generate_debug_units(
     let topological_sort = graph.topological_sort().expect("there should be something");
     let mut debug_unit = HashMap::new();
 
-    println!("topological order: {:?}", topological_sort);
-
     for local_file_path in topological_sort {
-        println!("processing file {:?}", local_file_path);
-
         let cache_entry = cache.files.get(&local_file_path).unwrap();
         let source_name = cache_entry.source_name.clone();
         let source_absolute_path = root_path.join(source_name.clone());
@@ -131,8 +128,6 @@ fn generate_debug_units(
             let cached_artifact = xx.get("default").expect("something here too");
 
             let absolute_path = config.artifacts.join(cached_artifact.path.clone());
-
-            println!("loading artifact {:?}", absolute_path);
 
             // load the artifact now
             let artifact = load_artifact(&absolute_path).map_err(|e| {
@@ -147,9 +142,6 @@ fn generate_debug_units(
                     if node.node_type == NodeType::ContractDefinition {
                         let contract_node = node.clone();
                         let mut contract_state_variables = Vec::new();
-                        let name = contract_node.attribute::<String>("name").unwrap();
-
-                        println!("contract name {:?} {:?}", name, contract_node.id.unwrap());
 
                         // insert the contract as well because it can be referenced by other contracts
                         // in variable declarations
@@ -161,7 +153,6 @@ fn generate_debug_units(
                             let node_id = node.id.unwrap();
 
                             if node.node_type == NodeType::StructDefinition {
-                                println!("insert struct definition {:?}", node_id);
                                 trace_context.structs.insert(node_id, node.clone());
                             } else if node.node_type == NodeType::VariableDeclaration {
                                 // not sure if I have to filter by stateVariable here
@@ -763,10 +754,10 @@ impl<'a> StatementVisitor<'a> {
         trace_context: &TraceContext,
     ) -> StatementVisitorResult<Option<Variable>> {
         if let Some(name) = node.attribute("name") {
-            println!("id {:?} name {:?}", node.id.unwrap(), name);
-
             let type_name = node.attribute::<Node>("typeName").unwrap();
             let typ = parse_variable_declaration_type(&type_name, &trace_context.structs);
+
+            let is_constant = node.attribute::<bool>("constant").unwrap();
 
             // this is most likely a state variable
             if let Some(id) = node.id {
@@ -774,7 +765,9 @@ impl<'a> StatementVisitor<'a> {
                     name,
                     id: id as u64,
                     state_variable: true,
-                    typ: None,
+                    location: VariableLocation::Storage,
+                    is_constant,
+                    typ,
                 }));
             }
         } else {
@@ -789,11 +782,18 @@ impl<'a> StatementVisitor<'a> {
                 .attribute::<String>("name")
                 .ok_or_missing_attribute("name")?;
 
+            let type_name = declaration.attribute::<Node>("typeName").unwrap();
+            let typ = parse_variable_declaration_type(&type_name, &trace_context.structs);
+
+            let is_constant = declaration.attribute::<bool>("constant").unwrap();
+
             return Ok(Some(Variable {
                 name,
                 id: node.id.unwrap() as u64,
                 state_variable: false,
-                typ: None,
+                location: VariableLocation::Stack, // Assuming memory for non-state variables, TODO: add memory example
+                is_constant,
+                typ,
             }));
         }
         Ok(None)
@@ -1002,6 +1002,7 @@ pub enum StepKind {
 pub struct DebugTrace {
     pub steps: Vec<DebugStep>,
     pub variables: HashMap<u64, Variable>,
+    pub assignments: HashMap<u64, Assignment>,
 }
 
 #[derive(Debug, Clone)]
@@ -1059,15 +1060,20 @@ impl DebugTrace {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+pub struct StateSnapshot {
+    pub memory: Bytes,
+    pub stack: Vec<Bytes>,
+    pub storage: HashMap<Bytes, Bytes>,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct DebugStep {
     pub location: SourceLocation,
     pub variables_in_scope: Vec<usize>,
     pub path: String,
     pub call_trace: Vec<usize>,
     pub kind: StepKind,
-    pub memory: Bytes,
-    pub stack: Vec<Bytes>,
-    pub storage: HashMap<Bytes, Bytes>,
+    pub state_snapshot: StateSnapshot,
 }
 
 impl From<&DebugStep> for StackFrame {
@@ -1118,6 +1124,7 @@ struct OtherMatchLocation {
     source_location: SourceElement,
     path: String,
     vars_in_scope: Vec<usize>,
+    state_snapshot: StateSnapshot,
 }
 
 pub fn generate_trace(
@@ -1158,17 +1165,17 @@ pub fn generate_trace(
         let debug_unit = debug_units.get(contract).unwrap();
 
         for step in node.steps.iter() {
-            let _memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
-            let _stack: Vec<Bytes> = step
+            let memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
+            let stack: Vec<Bytes> = step
                 .stack
                 .clone()
                 .unwrap()
                 .iter()
-                .map(|b| Bytes::from(b.as_le_bytes().to_vec()))
+                .map(|b| Bytes::from(b.to_be_bytes_vec()))
                 .collect();
 
             // the storage for the current state is before any key has been inserted
-            let _storage = contracts_storage
+            let storage = contracts_storage
                 .get(&step.contract)
                 .unwrap_or(&HashMap::new())
                 .clone();
@@ -1179,8 +1186,8 @@ pub fn generate_trace(
                     .entry(step.contract)
                     .or_insert(HashMap::new())
                     .insert(
-                        Bytes::from(storage_change.key.as_le_bytes().to_vec()),
-                        Bytes::from(storage_change.value.as_le_bytes().to_vec()),
+                        Bytes::from(storage_change.key.to_be_bytes_vec()),
+                        Bytes::from(storage_change.value.to_be_bytes_vec()),
                     );
             }
 
@@ -1214,6 +1221,11 @@ pub fn generate_trace(
                         source_location: source_location.clone(),
                         path: debug_unit_to_test.path.clone(),
                         vars_in_scope: vars,
+                        state_snapshot: StateSnapshot {
+                            stack: stack.clone(),
+                            memory: memory.clone(),
+                            storage: storage.clone(),
+                        },
                     });
                 }
             }
@@ -1233,6 +1245,7 @@ pub fn generate_trace(
                 source_location: Default::default(),
                 path: "".to_string(),
                 vars_in_scope: vec![],
+                state_snapshot: StateSnapshot::default(),
             });
         }
     }
@@ -1260,6 +1273,7 @@ pub fn generate_trace(
                         source_location: func_with_out.source_location.clone(), // we care less about this ones
                         path: func_with_out.path.clone(),
                         vars_in_scope: vec![],
+                        state_snapshot: func_with_out.state_snapshot.clone(),
                     });
                 } else {
                     // otherwise, pick the last element that matches
@@ -1295,6 +1309,8 @@ pub fn generate_trace(
     let mut call_trace = Vec::new();
     let mut expecting_function = true;
 
+    let mut assignments = HashMap::new();
+
     for i in final_matched_locations.iter() {
         let local_call_trace = call_trace.iter().map(|(_, pos)| *pos).collect();
         let path = i.path.clone();
@@ -1317,7 +1333,7 @@ pub fn generate_trace(
                     variables_in_scope: vec![],
                     call_trace: local_call_trace,
                     kind: StepKind::FunctionDefinition(func.name.clone()),
-                    ..Default::default()
+                    state_snapshot: i.state_snapshot.clone(),
                 });
             }
             MatchResult::ConstructorOut => {
@@ -1341,13 +1357,18 @@ pub fn generate_trace(
                     _ => StepKind::Statement,
                 };
 
+                if let InstructionKind::VariableDeclaration(id) = &inst.kind {
+                    let var_id = *id as u64;
+                    assignments.insert(var_id, Assignment::Stack(i.state_snapshot.stack.len() - 2));
+                }
+
                 steps.push(DebugStep {
                     location: inst.location.clone(),
                     path,
                     variables_in_scope: i.vars_in_scope.clone(),
                     call_trace: local_call_trace,
                     kind: stmt_kind,
-                    ..Default::default()
+                    state_snapshot: i.state_snapshot.clone(),
                 });
 
                 if matches!(inst.kind, InstructionKind::FunctionCall) {
@@ -1370,10 +1391,45 @@ pub fn generate_trace(
         variable_definitions.insert(id, variable.clone());
     }
 
+    // we are doing it after the rest to make sure all the variables are included in variable_definitions
+    for debug_unit in debug_units.values() {
+        // compute the assignemnts and offsets for the state variables that are not constants
+        let non_constante_state_variables: Vec<Variable> = debug_unit
+            .state_variables
+            .iter()
+            .flat_map(|id| {
+                let id = *id as u64;
+                let var: Variable = variable_definitions
+                    .get(&id)
+                    .cloned()
+                    .expect("variable not found");
+
+                if var.is_constant {
+                    return None;
+                }
+                Some(var)
+            })
+            .collect();
+
+        // put them in a tuple of the format (String, type) for the StateReference::compute_offsets
+        let state_variables_as_tuple: Vec<(String, Type)> = non_constante_state_variables
+            .iter()
+            .map(|var| (var.name.clone(), var.typ.clone()))
+            .collect();
+
+        let (offsets, _) = StateReference::compute_offsets(state_variables_as_tuple);
+
+        for (var, (_, offset)) in non_constante_state_variables.iter().zip(offsets.iter()) {
+            let var_id = var.id as u64;
+            assignments.insert(var_id, Assignment::Storage(offset.clone()));
+        }
+    }
+
     Ok((
         DebugTrace {
             steps,
             variables: variable_definitions,
+            assignments,
         },
         trace_context,
     ))
@@ -1435,11 +1491,27 @@ pub struct Block {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub enum VariableLocation {
+    Storage,
+    Memory,
+    Stack,
+}
+
+// Variable is a parsed representation of the Variable declaration NodeType in the AST.
+#[derive(Debug, Clone, Serialize)]
 pub struct Variable {
     pub name: String,
     pub id: u64,
-    pub state_variable: bool,
-    pub typ: Option<Type>,
+    pub state_variable: bool, // TODO: Replace with location
+    pub location: VariableLocation,
+    pub is_constant: bool,
+    pub typ: Type,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum Assignment {
+    Storage(StoragePosition),
+    Stack(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -895,14 +895,14 @@ impl<'a> Arbitrary<'a> for TypeMapping {
     }
 }
 
-struct StateReference {
+pub struct StateReference {
     storage: HashMap<FixedBytes<32>, FixedBytes<32>>,
 }
 
-#[derive(Default, Clone, Debug)]
-struct StoragePosition {
-    slot: FixedBytes<32>,
-    index_in_slot: u32,
+#[derive(Default, Clone, Debug, Serialize, Copy)]
+pub struct StoragePosition {
+    pub slot: FixedBytes<32>,
+    pub index_in_slot: u32,
 }
 
 impl StoragePosition {
@@ -932,11 +932,11 @@ impl StoragePosition {
 const SLOT_SIZE: u32 = 32;
 
 impl StateReference {
-    fn new(storage: HashMap<FixedBytes<32>, FixedBytes<32>>) -> Self {
+    pub fn new(storage: HashMap<FixedBytes<32>, FixedBytes<32>>) -> Self {
         Self { storage }
     }
 
-    fn resolve_type(&self, ty: Type, offset: StoragePosition) -> JsonValue {
+    pub fn resolve_type(&self, ty: Type, offset: StoragePosition) -> JsonValue {
         match ty {
             Type::Address | Type::Bool | Type::FixedBytes(_) | Type::Uint(_) | Type::Int(_) => {
                 let num_bytes = ty.get_bytes();
@@ -1046,7 +1046,9 @@ impl StateReference {
                     let length_bytes = if let Some(bytes) = self.storage.get(&offset.slot) {
                         bytes
                     } else {
-                        panic!("Could not find length at slot {}", hex::encode(offset.slot));
+                        // return an empty array of FixedBytes<32>
+                        let empty = FixedBytes::<32>::default();
+                        &empty.clone()
                     };
                     let length = U256::from_be_bytes(length_bytes.0).as_limbs()[0] as u32;
 
