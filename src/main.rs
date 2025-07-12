@@ -1,6 +1,6 @@
 use builder::DefinitionIndex;
 use built_info::PKG_VERSION;
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use debugger::DapDebugger;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -451,6 +451,8 @@ fn update_file_contents(
     }
 }
 
+const TEMP_FORGE_DUMP_PATH: &str = "/tmp/debug_trace.json";
+
 impl Backend {
     async fn send_log(&self, channel: String, message: String) {
         let params = LogParams { channel, message };
@@ -478,7 +480,7 @@ impl Backend {
             Err(e) => {
                 self.send_log(
                     "Forge Test Error".to_string(),
-                    format!("{} Failed to execute test: {}", debug_cmd, e),
+                    format!("{debug_cmd} Failed to execute test: {e}"),
                 )
                 .await;
             }
@@ -489,7 +491,7 @@ impl Backend {
         let workspace = self.workspace.lock().await;
         let workspace_path = workspace.clone();
 
-        let debug_cmd = Forge::debug(&function_name, &test_path, "/tmp/debug_trace.json");
+        let debug_cmd = Forge::debug(&function_name, &test_path, TEMP_FORGE_DUMP_PATH);
         let output = execute_command(&workspace_path, debug_cmd.clone());
 
         match output {
@@ -497,7 +499,7 @@ impl Backend {
                 let stdout = String::from_utf8_lossy(&output.stdout);
 
                 // Send both stdout and stderr to the client
-                self.send_log("Forge Test".to_string(), format!("{}", stdout))
+                self.send_log("Forge Test".to_string(), format!("{stdout}"))
                     .await;
 
                 // spawn the dap server
@@ -519,7 +521,7 @@ impl Backend {
             Err(e) => {
                 self.send_log(
                     "Forge Test Error".to_string(),
-                    format!("{} Failed to execute test: {}", "", e),
+                    format!("{debug_cmd} Failed to execute test: {e}"),
                 )
                 .await;
             }
@@ -664,38 +666,103 @@ fn get_range_exclusive(start: usize, end: usize, file: &ast::File) -> Range {
     get_range(start, end - 1, file)
 }
 
-/// Simple program to greet a person
-#[derive(Parser, Debug)]
-#[command(version(PKG_VERSION), about, long_about = None)]
-struct Args {
+/// Start the LSP server
+#[derive(Args, Debug)]
+struct ServerArgs {
     /// Name of the person to greet
     #[arg(short, long)]
     socket: u64,
 }
 
+/// Trace a concrete Solidity test file
+#[derive(Args, Debug)]
+struct TraceArgs {
+    /// Path to the file to trace
+    #[arg(long)]
+    match_test: String,
+
+    /// Path to the file to trace
+    #[arg(long)]
+    match_path: String,
+
+    /// Path to the workspace  
+    /// If not provided, the current directory will be used
+    #[arg(long)]
+    workspace: Option<String>,
+
+    /// Path to store the output of the trace
+    #[arg(long)]
+    dump: Option<String>,
+}
+
+impl TraceArgs {
+    fn run(&self) -> eyre::Result<()> {
+        let workspace_path = self.workspace.clone().unwrap_or_else(|| {
+            // Use the current directory as the workspace path
+            std::env::current_dir()
+                .expect("Failed to get current directory")
+                .to_str()
+                .expect("Failed to convert path to string")
+                .to_string()
+        });
+
+        let debug_cmd = Forge::debug(&self.match_test, &self.match_path, TEMP_FORGE_DUMP_PATH);
+        let _ = execute_command(&workspace_path, debug_cmd.clone())?;
+
+        let (debug_trace, _) = generate_trace(&workspace_path, TEMP_FORGE_DUMP_PATH)?;
+        if let Some(dump_path) = &self.dump {
+            std::fs::write(dump_path, serde_json::to_string(&debug_trace)?)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Parser, Debug)]
+#[command(version(PKG_VERSION), about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Server(ServerArgs),
+    Trace(TraceArgs),
+}
+
 #[tokio::main]
 async fn main() {
+    let cli = Cli::parse();
+
     tracing_subscriber::fmt()
         .with_ansi(false) // Disable ANSI colors
         .init();
 
-    let args = Args::parse();
+    match cli.command {
+        Commands::Server(args) => {
+            let (service, socket) = LspService::build(|client| Backend {
+                client,
+                files: Mutex::new(Default::default()),
+                workspace: Mutex::new(String::new()),
+                global_cache: Mutex::new(Default::default()),
+            })
+            .finish();
 
-    let (service, socket) = LspService::build(|client| Backend {
-        client,
-        files: Mutex::new(Default::default()),
-        workspace: Mutex::new(String::new()),
-        global_cache: Mutex::new(Default::default()),
-    })
-    .finish();
+            // bind to the pipe to create an async stdin/stdout
+            tracing::info!("Pipe: {}", args.socket);
 
-    // bind to the pipe to create an async stdin/stdout
-    tracing::info!("Pipe: {}", args.socket);
+            let stream = TcpStream::connect("127.0.0.1:1111").await.unwrap();
+            let (read, write) = tokio::io::split(stream);
 
-    let stream = TcpStream::connect("127.0.0.1:1111").await.unwrap();
-    let (read, write) = tokio::io::split(stream);
-
-    Server::new(read, write, socket).serve(service).await;
+            Server::new(read, write, socket).serve(service).await;
+        }
+        Commands::Trace(args) => {
+            if let Err(e) = args.run() {
+                eprintln!("Error running trace: {e}");
+            }
+        }
+    }
 }
 
 fn run_dap_server(workspace_path: &str) -> u64 {
@@ -703,7 +770,7 @@ fn run_dap_server(workspace_path: &str) -> u64 {
     let port = 50051; // Replace with your desired port number
 
     // Bind the listener before spawning the task
-    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
     tracing::info!("==> Server listening on port {}", port);
 
     let workspace_path = String::from(workspace_path);
@@ -715,7 +782,7 @@ fn run_dap_server(workspace_path: &str) -> u64 {
         let input = BufReader::new(stream.try_clone().unwrap());
         let output = BufWriter::new(stream);
 
-        let (debug_trace, _) = generate_trace(&workspace_path, "/tmp/debug_trace.json").unwrap();
+        let (debug_trace, _) = generate_trace(&workspace_path, TEMP_FORGE_DUMP_PATH).unwrap();
 
         let mut server = DapServer::new(input, output);
         server.serve(|client| DapDebugger::new(client, debug_trace));

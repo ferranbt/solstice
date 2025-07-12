@@ -22,7 +22,7 @@ jobs:
           components: rustfmt
 
       - name: Lint
-        run: cargo clippy -- -D warnings
+        run: make lint
 
       - name: Format code
-        run: cargo fmt -- --check
+        run: make check_format
