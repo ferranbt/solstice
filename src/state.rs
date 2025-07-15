@@ -39,6 +39,9 @@ pub enum Type {
     /// `uint[size]`
     Uint(Option<u16>),
 
+    /// `enum $name`
+    Enum(TypeEnum),
+
     /// `$ty[$($size)?]`
     Array(TypeArray),
     /// `$(tuple)? ( $($types,)* )`
@@ -121,6 +124,18 @@ impl Type {
                 Some(s) => (*s as u32) / 8,
                 None => 32, // default uint256
             },
+            Type::Enum(enum_type) => {
+                let num_variants = enum_type.identifiers.len();
+                if num_variants <= 256 {
+                    1 // uint8
+                } else if num_variants <= 65536 {
+                    2 // uint16
+                } else if num_variants <= 16777216 {
+                    3 // uint24
+                } else {
+                    4 // uint32
+                }
+            }
             Type::Array(_) => 32,
             Type::Tuple(_) => 32,
             Type::Mapping(_) => 32,
@@ -135,7 +150,8 @@ impl Type {
             | Type::Address
             | Type::FixedBytes(_)
             | Type::Int(_)
-            | Type::Uint(_) => 1,
+            | Type::Uint(_)
+            | Type::Enum(_) => 1,
             Type::Array(TypeArray { ty, size }) => match size {
                 None => 1,
                 Some(size) => {
@@ -183,6 +199,7 @@ impl<'a> Arbitrary<'a> for Type {
             7, // Array
             8, // Tuple
                //9, // Mapping
+               // 10, // Enum TODO
         ])? {
             0 => Ok(Type::Address),
             1 => Ok(Type::Bool),
@@ -353,6 +370,9 @@ contract ComplexTypes {{
                 Some(s) => format!("uint{}", s),
                 None => "uint256".to_string(),
             },
+            Type::Enum(_) => {
+                todo!("Implement enum encoding")
+            }
         }
     }
 
@@ -375,6 +395,7 @@ contract ComplexTypes {{
             Type::Array(arr) => self.generate_array_value(field_name, arr),
             Type::Tuple(tuple) => self.generate_struct_value(field_name, tuple),
             Type::Mapping(mapping) => self.generate_mapping_value(field_name, mapping),
+            Type::Enum(_) => todo!(),
         }
     }
 
@@ -747,6 +768,27 @@ contract ComplexTypes {{
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct TypeEnum {
+    identifiers: Vec<String>,
+}
+
+impl<'a> Arbitrary<'a> for TypeEnum {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        let num_identifiers = u.int_in_range(1..=20)?;
+        let identifiers = (0..num_identifiers)
+            .map(|i| {
+                // Generate a random identifier name
+                let name = format!("Identifier{}", i);
+                // Ensure the identifier is unique
+                Ok(name)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(TypeEnum { identifiers })
+    }
+}
+
 // Memory type is a type that is only allocated in memory, this is done to apply a subset and
 // use arbitary on that subset
 #[derive(Clone, Debug, PartialEq)]
@@ -1097,6 +1139,9 @@ impl StateReference {
             Type::Mapping(_) => {
                 JsonValue::Null // or handle mapping values if needed
             }
+            Type::Enum(_) => {
+                JsonValue::Null // TODO
+            }
         }
     }
 
@@ -1145,15 +1190,32 @@ impl StateReference {
     }
 }
 
-pub fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node>) -> Type {
+pub fn parse_variable_declaration_type(
+    typ: &Node,
+    structs: &HashMap<usize, Node>,
+) -> eyre::Result<Type> {
     match &typ.node_type {
         NodeType::UserDefinedTypeName => {
             let reference_declaration = typ.attribute::<usize>("referencedDeclaration").unwrap();
-            let struct_declaration = structs.get(&reference_declaration).unwrap();
+            let struct_declaration = match structs.get(&reference_declaration) {
+                Some(node) => node,
+                None => {
+                    return Err(eyre::eyre!(
+                        "Referenced declaration {} not found",
+                        reference_declaration
+                    ));
+                }
+            };
 
             if struct_declaration.node_type == NodeType::ContractDefinition {
                 // If it references a contract, store like an address for now
-                return Type::Address;
+                return Ok(Type::Address);
+            } else if struct_declaration.node_type == NodeType::ElementaryTypeName
+                || struct_declaration.node_type == NodeType::EnumDefinition
+            {
+                // If it references an elementary type, return that type
+                // TODO: We could check directly whether the node_type is of type struct here.
+                return parse_variable_declaration_type(struct_declaration, structs);
             }
 
             let members = struct_declaration
@@ -1166,12 +1228,12 @@ pub fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node
                 let name = member.attribute::<String>("name").unwrap();
 
                 let type_name = member.attribute::<Node>("typeName").unwrap();
-                let type_node = parse_variable_declaration_type(&type_name, structs);
+                let type_node = parse_variable_declaration_type(&type_name, structs)?;
 
                 inner_types.push((name, type_node));
             }
 
-            Type::Tuple(TypeTuple { types: inner_types })
+            Ok(Type::Tuple(TypeTuple { types: inner_types }))
         }
         NodeType::ElementaryTypeName => {
             let name: String = typ.attribute("name").unwrap();
@@ -1181,25 +1243,25 @@ pub fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node
             if name.starts_with("bytes") && name.len() > 5 {
                 let size = name[5..].parse::<u16>().unwrap();
                 if size >= 1 && size <= 32 {
-                    return Type::FixedBytes(size);
+                    return Ok(Type::FixedBytes(size));
                 }
             }
 
             // handle int, int<bytes>, uint and uint<bytes>
             if name == "uint" {
-                return Type::Uint(Some(256));
+                return Ok(Type::Uint(Some(256)));
             } else if name == "int" {
-                return Type::Int(Some(256));
+                return Ok(Type::Int(Some(256)));
             } else if name.starts_with("int") {
                 let size = name[3..].parse::<u16>().unwrap();
-                return Type::Int(Some(size));
+                return Ok(Type::Int(Some(size)));
             } else if name.starts_with("uint") {
                 let size = name[4..].parse::<u16>().unwrap();
-                return Type::Uint(Some(size));
+                return Ok(Type::Uint(Some(size)));
             }
 
             // handle address and bool
-            match name {
+            let typ = match name {
                 "address" => Type::Address,
                 "bool" => Type::Bool,
                 "bytes" => Type::Bytes,
@@ -1207,23 +1269,25 @@ pub fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node
                 _ => {
                     panic!("unknown type name: {}", name);
                 }
-            }
+            };
+
+            return Ok(typ);
         }
         NodeType::Mapping => {
             let key_type = typ.attribute("keyType").unwrap();
             let value_type = typ.attribute("valueType").unwrap();
 
-            let one = parse_variable_declaration_type(&key_type, structs);
-            let two = parse_variable_declaration_type(&value_type, structs);
+            let one = parse_variable_declaration_type(&key_type, structs)?;
+            let two = parse_variable_declaration_type(&value_type, structs)?;
 
-            Type::Mapping(TypeMapping {
+            Ok(Type::Mapping(TypeMapping {
                 key: Box::new(one),
                 value: Box::new(two),
-            })
+            }))
         }
         NodeType::ArrayTypeName => {
             let base_type = typ.attribute("baseType").unwrap();
-            let inner_type = parse_variable_declaration_type(&base_type, structs);
+            let inner_type = parse_variable_declaration_type(&base_type, structs)?;
 
             let length = match typ.attribute::<Node>("length") {
                 Some(node) => {
@@ -1233,18 +1297,21 @@ pub fn parse_variable_declaration_type(typ: &Node, structs: &HashMap<usize, Node
                 _ => None,
             };
 
-            Type::Array(TypeArray {
+            Ok(Type::Array(TypeArray {
                 ty: Box::new(inner_type),
                 size: length,
-            })
+            }))
         }
+        NodeType::EnumDefinition => Ok(Type::Enum(TypeEnum {
+            identifiers: vec![], // TODO:
+        })),
         _ => {
             unreachable!("unknown type name: {:?}", typ.node_type);
         }
     }
 }
 
-fn extract_state_variables(ast: &Ast) -> Vec<(String, Type)> {
+fn extract_state_variables(ast: &Ast) -> eyre::Result<Vec<(String, Type)>> {
     let mut structs = HashMap::new();
 
     // loop over the structs first
@@ -1264,7 +1331,7 @@ fn extract_state_variables(ast: &Ast) -> Vec<(String, Type)> {
             if child.node_type == NodeType::VariableDeclaration {
                 let typ = child.attribute::<Node>("typeName").unwrap();
 
-                let ty = parse_variable_declaration_type(&typ, &structs);
+                let ty = parse_variable_declaration_type(&typ, &structs)?;
                 let name = child.attribute::<String>("name").unwrap();
 
                 variables.push((name, ty));
@@ -1272,7 +1339,7 @@ fn extract_state_variables(ast: &Ast) -> Vec<(String, Type)> {
         }
     }
 
-    variables
+    Ok(variables)
 }
 
 /// Recursively visits all nodes of a specified type in the AST and calls the provided callback
@@ -1361,7 +1428,7 @@ fn extract_non_state_variables(ast: &Ast, bytecode: CompactBytecode) -> HashMap<
 
         let typ = node.attribute::<Node>("typeName").unwrap();
 
-        let ty = parse_variable_declaration_type(&typ, &structs);
+        let ty = parse_variable_declaration_type(&typ, &structs).unwrap();
         let name = node.attribute::<String>("name").unwrap();
 
         let location = match node
@@ -1762,7 +1829,7 @@ mod tests {
 
     impl DeployResult {
         fn retrieve_storage(&self) -> JsonValue {
-            let state_variables = extract_state_variables(&self.contract.ast);
+            let state_variables = extract_state_variables(&self.contract.ast).unwrap();
 
             let storage_slots = self
                 .frame

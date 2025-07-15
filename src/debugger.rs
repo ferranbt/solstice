@@ -401,7 +401,8 @@ impl Debugger {
                     .collect();
 
                 let state_resolver = StateReference::new(contract_storage);
-                let value = state_resolver.resolve_type(variable.typ.clone(), storage_position);
+                let typ = self.trace.variable_types.get(&var_id).cloned().unwrap();
+                let value = state_resolver.resolve_type(typ.clone(), storage_position);
 
                 let var = dap::types::Variable {
                     name: variable.name.clone(),
@@ -427,19 +428,25 @@ impl Debugger {
                     VariableLocation::Stack => {
                         tracing::info!("Variable is in stack, value: {:?}", value);
 
-                        let typ_size = variable.typ.get_bytes();
+                        let typ = self
+                            .trace
+                            .variable_types
+                            .get(&variable.id)
+                            .cloned()
+                            .unwrap();
+                        let typ_size = typ.get_bytes();
 
                         // fixed bytes pads to the left and the other elements pads to the right
-                        let value_bytes = match variable.typ {
+                        let value_bytes = match typ {
                             Type::FixedBytes(_) => value[0..typ_size as usize].to_vec(),
                             _ => value[32 - typ_size as usize..].to_vec(),
                         };
 
-                        let value = variable.typ.decode_bytes(&value_bytes).map_err(|e| {
+                        let value = typ.decode_bytes(&value_bytes).map_err(|e| {
                             eyre::eyre!(
                                 "Failed to decode variable bytes {:?} with type {:?}: {}",
                                 value_bytes,
-                                variable.typ,
+                                typ,
                                 e
                             )
                         })?;

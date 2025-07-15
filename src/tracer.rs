@@ -1,6 +1,4 @@
-use crate::graph::Graph;
-use crate::state::{parse_variable_declaration_type, Type};
-use crate::state::{StateReference, StoragePosition};
+use crate::state::{parse_variable_declaration_type, StateReference, StoragePosition, Type};
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
@@ -22,7 +20,7 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::fs;
 use std::hash::Hash;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use thiserror::Error;
 
@@ -90,6 +88,7 @@ fn generate_debug_units(
     root_path: &Path,
     contracts_involved: Option<&HashSet<String>>,
 ) -> Result<(HashMap<String, DebugUnit>, TraceContext), Box<dyn std::error::Error>> {
+    tracing::info!("Generating debug units...");
     let config: ProjectPathsConfig<SolData> =
         ProjectPathsConfig::dapptools(Path::new(root_path)).unwrap();
 
@@ -101,22 +100,12 @@ fn generate_debug_units(
 
     let mut trace_context = TraceContext::new();
 
-    // create a graph with the cache to perform topological sort
-    let mut graph = Graph::new();
-    for cache_entry in cache.entries() {
-        let path_buf: PathBuf = cache_entry.source_name.clone();
-        let path_buf_index = graph.add_node(path_buf);
-
-        for import in cache_entry.imports.clone() {
-            let import_index = graph.add_node(import.clone());
-            graph.add_edge(import_index, path_buf_index);
-        }
-    }
-
-    let topological_sort = graph.topological_sort().expect("there should be something");
+    tracing::info!("Found {} cache entries", cache.len());
     let mut debug_unit = HashMap::new();
 
-    for local_file_path in topological_sort {
+    for cache_entry in cache.entries() {
+        let local_file_path = cache_entry.source_name.clone();
+
         let cache_entry = cache.files.get(&local_file_path).unwrap();
         let source_name = cache_entry.source_name.clone();
         let source_absolute_path = root_path.join(source_name.clone());
@@ -165,10 +154,9 @@ fn generate_debug_units(
                                 trace_context.structs.insert(node_id, node.clone());
                             } else if node.node_type == NodeType::VariableDeclaration {
                                 // not sure if I have to filter by stateVariable here
-                                let variable =
-                                    StatementVisitor::build_debug_variable(node, &trace_context)
-                                        .expect("variable")
-                                        .unwrap();
+                                let variable = StatementVisitor::build_debug_variable(node)
+                                    .expect("variable")
+                                    .unwrap();
 
                                 trace_context.state_variables.insert(node_id, variable);
                                 contract_state_variables.push(node_id);
@@ -221,42 +209,49 @@ fn generate_debug_units(
                             deployed_bytecode.bytecode.as_ref().unwrap().clone();
                         let bytecode = artifact.bytecode.as_ref().unwrap().clone();
 
-                        if node.node_type == NodeType::ContractDefinition {
-                            let contract_name = node.attribute::<String>("name").unwrap();
+                        match node.node_type {
+                            NodeType::ContractDefinition => {
+                                let contract_name = node.attribute::<String>("name").unwrap();
 
-                            let mut linearized_base_contracts = node
-                                .attribute::<Vec<usize>>("linearizedBaseContracts")
-                                .unwrap();
-                            linearized_base_contracts.reverse();
+                                let mut linearized_base_contracts = node
+                                    .attribute::<Vec<usize>>("linearizedBaseContracts")
+                                    .unwrap();
+                                linearized_base_contracts.reverse();
 
-                            if contract_name == name {
-                                let state_variables = linearized_base_contracts
-                                    .iter()
-                                    .flat_map(|base_contract_id| {
-                                        trace_context
-                                            .contract_state_variables
-                                            .get(base_contract_id)
-                                            .unwrap()
-                                    })
-                                    .copied()
-                                    .collect::<Vec<_>>();
+                                if contract_name == name {
+                                    let mut visitor = StatementVisitor::new(
+                                        deployed_bytecode,
+                                        bytecode,
+                                        source_absolute_path.to_str().unwrap().to_string(),
+                                        source,
+                                    );
+                                    visitor.visit_contract(&node.clone()).unwrap();
 
-                                let mut visitor = StatementVisitor::new(
-                                    deployed_bytecode,
-                                    bytecode,
-                                    source_absolute_path.to_str().unwrap().to_string(),
-                                    source,
-                                    &trace_context,
-                                );
-                                visitor.visit_contract(&node.clone()).unwrap();
+                                    // just so that we can keep the reference around
+                                    let mut dd = visitor.debug_unit;
+                                    dd.source_id = artifact.id.unwrap();
+                                    dd.linearized_base_contracts = linearized_base_contracts;
 
-                                // just so that we can keep the reference around
-                                let mut dd = visitor.debug_unit;
-                                dd.source_id = artifact.id.unwrap();
-                                dd.state_variables = state_variables;
-
-                                debug_unit.insert(contract_name, dd);
+                                    debug_unit.insert(contract_name, dd);
+                                }
                             }
+                            NodeType::EnumDefinition => {
+                                let node_id = node.id.unwrap();
+                                trace_context.structs.insert(node_id, node.clone());
+                            }
+                            NodeType::UserDefinedValueTypeDefinition => {
+                                let node_id = node.id.unwrap();
+
+                                let underlying_type = node
+                                    .attribute::<Node>("underlyingType")
+                                    .ok_or_missing_attribute("underlyingType")
+                                    .unwrap();
+
+                                trace_context
+                                    .structs
+                                    .insert(node_id, underlying_type.clone());
+                            }
+                            _ => {}
                         }
                     }
                 });
@@ -300,7 +295,7 @@ impl BytecodeMap {
     }
 }
 
-struct StatementVisitor<'a> {
+struct StatementVisitor {
     pub source: String,
     pub debug_unit: DebugUnit,
 
@@ -309,9 +304,6 @@ struct StatementVisitor<'a> {
 
     // reference to the contract node that we are visiting
     pub contract_node: Option<Node>,
-
-    // reference to the trace context
-    pub trace_context: &'a TraceContext,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -355,13 +347,12 @@ impl<T> OptionExt<T> for Option<T> {
 
 type StatementVisitorResult<T> = Result<T, StatementVisitorError>;
 
-impl<'a> StatementVisitor<'a> {
+impl StatementVisitor {
     pub fn new(
         deployed_bytecode: CompactBytecode,
         bytecode: CompactBytecode,
         path: String,
         source: String,
-        trace_context: &'a TraceContext,
     ) -> Self {
         Self {
             source: source.clone(),
@@ -375,8 +366,8 @@ impl<'a> StatementVisitor<'a> {
                 bytecode: BytecodeMap::new(&bytecode),
                 deployed_bytecode: BytecodeMap::new(&deployed_bytecode),
                 state_variables: Vec::new(),
+                linearized_base_contracts: Vec::new(),
             },
-            trace_context,
         }
     }
 
@@ -435,10 +426,13 @@ impl<'a> StatementVisitor<'a> {
 
                     self.debug_unit.functions.insert(func.name.clone(), func);
                 }
-                NodeType::EnumDefinition => {
+                NodeType::EnumDefinition
+                | NodeType::UsingForDirective
+                | NodeType::ErrorDefinition => {
                     // TODO
                 }
                 _ => {
+                    // Panic here because I want to be aware of the missing types
                     panic!("Not handled {:?}", node.node_type);
                 }
             }
@@ -608,8 +602,12 @@ impl<'a> StatementVisitor<'a> {
                     }
                 }
                 NodeType::VariableDeclarationStatement => {
-                    let var = Self::build_debug_variable(statement, self.trace_context)?
-                        .expect("variable");
+                    let var = if let Some(var) = Self::build_debug_variable(statement)? {
+                        var
+                    } else {
+                        continue;
+                    };
+
                     self.debug_unit.variables.push(var.clone());
                     block.variables.push(var.id as usize);
 
@@ -758,14 +756,9 @@ impl<'a> StatementVisitor<'a> {
         Ok(())
     }
 
-    fn build_debug_variable(
-        node: &Node,
-        trace_context: &TraceContext,
-    ) -> StatementVisitorResult<Option<Variable>> {
+    fn build_debug_variable(node: &Node) -> StatementVisitorResult<Option<Variable>> {
         if let Some(name) = node.attribute("name") {
             let type_name = node.attribute::<Node>("typeName").unwrap();
-            let typ = parse_variable_declaration_type(&type_name, &trace_context.structs);
-
             let is_constant = node.attribute::<bool>("constant").unwrap();
 
             // this is most likely a state variable
@@ -776,14 +769,19 @@ impl<'a> StatementVisitor<'a> {
                     state_variable: true,
                     location: VariableLocation::Storage,
                     is_constant,
-                    typ,
+                    type_name,
                 }));
             }
         } else {
-            // check now for a normal varaible decalration
-            let declarations = node
-                .attribute::<Vec<Node>>("declarations")
-                .ok_or_missing_attribute("declarations")?;
+            let declarations = match node.attribute::<Vec<Node>>("declarations") {
+                Some(dec) => dec,
+                None => {
+                    // TODO: A statement like
+                    // (,val,) => call()
+                    // geneates a vector with null values which does not get parsed with this declarations statement
+                    return Ok(None);
+                }
+            };
 
             let declaration = declarations.first().unwrap();
 
@@ -792,8 +790,6 @@ impl<'a> StatementVisitor<'a> {
                 .ok_or_missing_attribute("name")?;
 
             let type_name = declaration.attribute::<Node>("typeName").unwrap();
-            let typ = parse_variable_declaration_type(&type_name, &trace_context.structs);
-
             let is_constant = declaration.attribute::<bool>("constant").unwrap();
 
             return Ok(Some(Variable {
@@ -802,7 +798,7 @@ impl<'a> StatementVisitor<'a> {
                 state_variable: false,
                 location: VariableLocation::Stack, // Assuming memory for non-state variables, TODO: add memory example
                 is_constant,
-                typ,
+                type_name,
             }));
         }
         Ok(None)
@@ -834,7 +830,7 @@ impl<'a> StatementVisitor<'a> {
                 ));
             }
 
-            if let Some(var) = Self::build_debug_variable(&param, self.trace_context)? {
+            if let Some(var) = Self::build_debug_variable(&param)? {
                 let mut var = var.clone();
                 var.state_variable = false;
 
@@ -1011,6 +1007,7 @@ pub enum StepKind {
 pub struct DebugTrace {
     pub steps: Vec<DebugStep>,
     pub variables: HashMap<u64, Variable>,
+    pub variable_types: HashMap<u64, Type>,
     pub assignments: HashMap<u64, Assignment>,
 }
 
@@ -1147,7 +1144,26 @@ pub fn generate_trace(
         .map_err(|e| TraceError::FailedToParseDebugDump(trace_path.to_string(), e))?;
 
     let root_path = Path::new(workspace_path);
-    let (debug_units, trace_context) = generate_debug_units(root_path, None).unwrap();
+    let (mut debug_units, trace_context) = generate_debug_units(root_path, None).unwrap();
+
+    // for all the debug units resolve the state_variables
+    // we have to do it here before the trace because the scope search requires having the state variables
+    // already set.
+    for debug_unit in debug_units.values_mut() {
+        let state_variables = debug_unit
+            .linearized_base_contracts
+            .iter()
+            .flat_map(|base_contract_id| {
+                trace_context
+                    .contract_state_variables
+                    .get(base_contract_id)
+                    .unwrap()
+            })
+            .copied()
+            .collect::<Vec<_>>();
+
+        debug_unit.state_variables = state_variables;
+    }
 
     // map each contract to its current storage
     let mut contracts_storage = HashMap::new();
@@ -1393,17 +1409,34 @@ pub fn generate_trace(
         for variable in debug_unit.variables.iter() {
             variable_definitions.insert(variable.id, variable.clone());
         }
+
+        // add the state variables from the debug unit, the debug unit only tracks
+        // the ids so we have to use the context to retrieve the actual variables
+        for state_variable_id in debug_unit.state_variables.iter() {
+            let id = *state_variable_id;
+            let var = trace_context
+                .state_variables
+                .get(&id)
+                .cloned()
+                .expect("state variable not found");
+
+            variable_definitions.insert(id as u64, var);
+        }
     }
 
-    for (id, variable) in trace_context.state_variables.clone() {
-        let id = id as u64;
-        variable_definitions.insert(id, variable.clone());
+    // resolve the type of all the variables we have in variable_definitions so far since
+    // those are the ones we are going to be used in the trace
+    let mut variable_types = HashMap::new();
+    for variable in variable_definitions.values() {
+        let typ =
+            parse_variable_declaration_type(&variable.type_name, &trace_context.structs).unwrap();
+        variable_types.insert(variable.id, typ);
     }
 
     // we are doing it after the rest to make sure all the variables are included in variable_definitions
     for debug_unit in debug_units.values() {
         // compute the assignemnts and offsets for the state variables that are not constants
-        let non_constante_state_variables: Vec<Variable> = debug_unit
+        let non_constante_state_variables: Vec<(Variable, Type)> = debug_unit
             .state_variables
             .iter()
             .flat_map(|id| {
@@ -1416,19 +1449,24 @@ pub fn generate_trace(
                 if var.is_constant {
                     return None;
                 }
-                Some(var)
+                let typ = variable_types
+                    .get(&var.id)
+                    .cloned()
+                    .expect("type not found");
+
+                Some((var, typ))
             })
             .collect();
 
         // put them in a tuple of the format (String, type) for the StateReference::compute_offsets
         let state_variables_as_tuple: Vec<(String, Type)> = non_constante_state_variables
             .iter()
-            .map(|var| (var.name.clone(), var.typ.clone()))
+            .map(|(var, typ)| (var.name.clone(), typ.clone()))
             .collect();
 
         let (offsets, _) = StateReference::compute_offsets(state_variables_as_tuple);
 
-        for (var, (_, offset)) in non_constante_state_variables.iter().zip(offsets.iter()) {
+        for ((var, _), (_, offset)) in non_constante_state_variables.iter().zip(offsets.iter()) {
             let var_id = var.id as u64;
             assignments.insert(var_id, Assignment::Storage(offset.clone()));
         }
@@ -1438,6 +1476,7 @@ pub fn generate_trace(
         DebugTrace {
             steps,
             variables: variable_definitions,
+            variable_types,
             assignments,
         },
         trace_context,
@@ -1454,6 +1493,7 @@ pub struct DebugUnit {
     // list of all the variables in this contract
     pub variables: Vec<Variable>,
     pub source_id: u32,
+    pub linearized_base_contracts: Vec<usize>,
     pub bytecode: BytecodeMap,
     pub deployed_bytecode: BytecodeMap,
 }
@@ -1513,7 +1553,7 @@ pub struct Variable {
     pub state_variable: bool, // TODO: Replace with location
     pub location: VariableLocation,
     pub is_constant: bool,
-    pub typ: Type,
+    pub type_name: Node,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1718,6 +1758,7 @@ mod tests {
     use super::*;
     use crate::state::compile_contract;
     use std::fmt::{Display, Write};
+    use std::path::PathBuf;
 
     impl Display for DebugUnit {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1900,7 +1941,6 @@ mod tests {
                     bytecode,
                     path.to_string_lossy().to_string(),
                     contract,
-                    &trace_context,
                 );
                 visitor.visit_contract(contract_ast).unwrap();
 
