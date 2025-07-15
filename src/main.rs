@@ -35,7 +35,6 @@ pub mod built_info {
 mod builder;
 mod dap;
 mod debugger;
-mod graph;
 mod state;
 mod tracer;
 
