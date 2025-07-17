@@ -667,7 +667,7 @@ fn get_range_exclusive(start: usize, end: usize, file: &ast::File) -> Range {
 
 /// Start the LSP server
 #[derive(Args, Debug)]
-struct ServerArgs {
+pub struct ServerArgs {
     /// Name of the person to greet
     #[arg(short, long)]
     socket: u64,
@@ -675,27 +675,27 @@ struct ServerArgs {
 
 /// Trace a concrete Solidity test file
 #[derive(Args, Debug)]
-struct TraceArgs {
+pub struct TraceArgs {
     /// Path to the file to trace
     #[arg(long)]
-    match_test: String,
+    pub match_test: String,
 
     /// Path to the file to trace
     #[arg(long)]
-    match_path: String,
+    pub match_path: String,
 
     /// Path to the workspace  
     /// If not provided, the current directory will be used
     #[arg(long)]
-    workspace: Option<String>,
+    pub workspace: Option<String>,
 
     /// Path to store the output of the trace
     #[arg(long)]
-    dump: Option<String>,
+    pub dump: Option<String>,
 }
 
 impl TraceArgs {
-    fn run(&self) -> eyre::Result<()> {
+    pub fn run(&self) -> eyre::Result<()> {
         let workspace_path = self.workspace.clone().unwrap_or_else(|| {
             // Use the current directory as the workspace path
             std::env::current_dir()
@@ -719,46 +719,41 @@ impl TraceArgs {
 
 #[derive(Parser, Debug)]
 #[command(version(PKG_VERSION), about, long_about = None)]
-struct Cli {
+pub struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
-enum Commands {
+pub enum Commands {
     Server(ServerArgs),
     Trace(TraceArgs),
 }
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
+impl Cli {
+    pub async fn run(&self) {
+        match &self.command {
+            Commands::Server(args) => {
+                let (service, socket) = LspService::build(|client| Backend {
+                    client,
+                    files: Mutex::new(Default::default()),
+                    workspace: Mutex::new(String::new()),
+                    global_cache: Mutex::new(Default::default()),
+                })
+                .finish();
 
-    tracing_subscriber::fmt()
-        .with_ansi(false) // Disable ANSI colors
-        .init();
+                // bind to the pipe to create an async stdin/stdout
+                tracing::info!("Pipe: {}", args.socket);
 
-    match cli.command {
-        Commands::Server(args) => {
-            let (service, socket) = LspService::build(|client| Backend {
-                client,
-                files: Mutex::new(Default::default()),
-                workspace: Mutex::new(String::new()),
-                global_cache: Mutex::new(Default::default()),
-            })
-            .finish();
+                let stream = TcpStream::connect("127.0.0.1:1111").await.unwrap();
+                let (read, write) = tokio::io::split(stream);
 
-            // bind to the pipe to create an async stdin/stdout
-            tracing::info!("Pipe: {}", args.socket);
-
-            let stream = TcpStream::connect("127.0.0.1:1111").await.unwrap();
-            let (read, write) = tokio::io::split(stream);
-
-            Server::new(read, write, socket).serve(service).await;
-        }
-        Commands::Trace(args) => {
-            if let Err(e) = args.run() {
-                eprintln!("Error running trace: {e}");
+                Server::new(read, write, socket).serve(service).await;
+            }
+            Commands::Trace(args) => {
+                if let Err(e) = args.run() {
+                    eprintln!("Error running trace: {e}");
+                }
             }
         }
     }
