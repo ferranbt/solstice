@@ -761,19 +761,12 @@ impl StatementVisitor {
             let type_name = node.attribute::<Node>("typeName").unwrap();
             let is_constant = node.attribute::<bool>("constant").unwrap();
 
-            let storage_location = match node
-                .attribute::<String>("storageLocation")
-                .ok_or_missing_attribute("storageLocation")?
-                .as_str()
-            {
-                "memory" => VariableLocation::Memory,
-                "default" => default_location,
-                loc => {
-                    return Err(StatementVisitorError::UnexpectedStorageLocation(
-                        loc.to_string(),
-                    ))
-                }
-            };
+            let storage_location = VariableLocation::from_str(
+                node.attribute::<String>("storageLocation")
+                    .ok_or_missing_attribute("storageLocation")?
+                    .as_str(),
+                default_location,
+            )?;
 
             let state_variable = storage_location == VariableLocation::Storage;
 
@@ -809,19 +802,13 @@ impl StatementVisitor {
             let type_name = declaration.attribute::<Node>("typeName").unwrap();
             let is_constant = declaration.attribute::<bool>("constant").unwrap();
 
-            let storage_location = match declaration
-                .attribute::<String>("storageLocation")
-                .ok_or_missing_attribute("storageLocation")?
-                .as_str()
-            {
-                "memory" => VariableLocation::Memory,
-                "default" => default_location,
-                loc => {
-                    return Err(StatementVisitorError::UnexpectedStorageLocation(
-                        loc.to_string(),
-                    ))
-                }
-            };
+            let storage_location = VariableLocation::from_str(
+                declaration
+                    .attribute::<String>("storageLocation")
+                    .ok_or_missing_attribute("storageLocation")?
+                    .as_str(),
+                default_location,
+            )?;
 
             return Ok(Some(Variable {
                 name,
@@ -1579,6 +1566,22 @@ pub enum VariableLocation {
     Storage,
     Memory,
     Stack,
+    Calldata,
+}
+
+impl VariableLocation {
+    fn from_str(s: &str, default: VariableLocation) -> Result<Self, StatementVisitorError> {
+        match s {
+            "storage" => Ok(VariableLocation::Storage),
+            "memory" => Ok(VariableLocation::Memory),
+            "stack" => Ok(VariableLocation::Stack),
+            "calldata" => Ok(VariableLocation::Calldata),
+            "default" => Ok(default),
+            _ => Err(StatementVisitorError::UnexpectedStorageLocation(
+                s.to_string(),
+            )),
+        }
+    }
 }
 
 // Variable is a parsed representation of the Variable declaration NodeType in the AST.
