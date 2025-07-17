@@ -805,7 +805,7 @@ contract ComplexTypes {{
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
-struct TypeEnum {
+pub struct TypeEnum {
     name: String,
     identifiers: Vec<String>,
 }
@@ -1254,6 +1254,7 @@ pub fn parse_variable_declaration_type(
                 return Ok(Type::Address);
             } else if struct_declaration.node_type == NodeType::ElementaryTypeName
                 || struct_declaration.node_type == NodeType::EnumDefinition
+                || struct_declaration.node_type == NodeType::UserDefinedValueTypeDefinition
             {
                 // If it references an elementary type, return that type
                 // TODO: We could check directly whether the node_type is of type struct here.
@@ -1350,6 +1351,12 @@ pub fn parse_variable_declaration_type(
             let identifiers = members.iter().map(|m| m.name.clone()).collect();
 
             Ok(Type::Enum(TypeEnum { name, identifiers }))
+        }
+        NodeType::UserDefinedValueTypeDefinition => {
+            let underlying_type = typ.attribute::<Node>("underlyingType").unwrap();
+            let inner_type = parse_variable_declaration_type(&underlying_type, structs)?;
+
+            Ok(inner_type)
         }
         _ => {
             unreachable!("unknown type name: {:?}", typ.node_type);
