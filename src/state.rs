@@ -2326,8 +2326,6 @@ mod tests {
             let mut u = Unstructured::new(&data);
             let artifact = ContractGenerator::build_memory(typ.clone(), &mut u);
 
-            println!("artifact {}", artifact.source);
-
             let result = match harness.deploy(&artifact.source).await {
                 Ok(result) => result,
                 Err(DeployError::RecoverableError(_)) => continue,
