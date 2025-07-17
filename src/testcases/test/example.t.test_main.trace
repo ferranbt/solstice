@@ -9,3 +9,5 @@
   [STMT] 16:8 scope=[value, val]
 [STMT] 12:8 scope=[value, example]
 [STMT] 22:8 scope=[value]
+---
+Variable: value = "2"
