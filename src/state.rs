@@ -1645,8 +1645,6 @@ fn resolve_memory_assignment(typ: Type, offset_bytes: usize, memory: Bytes) -> s
                 _ => value_bytes[32 - typ_size as usize..].to_vec(),
             };
 
-            println!("type {:?} value_bytes: {:?}", typ, value_bytes);
-
             typ.decode_bytes(&value_bytes).unwrap()
         }
     }
