@@ -431,8 +431,6 @@ impl Debugger {
                     }
                 };
 
-                println!("print location {:?}", variable.location);
-
                 match variable.location {
                     VariableLocation::Stack => {
                         tracing::info!("Variable is in stack, value: {:?}", value);
