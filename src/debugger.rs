@@ -156,12 +156,15 @@ impl Service for DapDebugger {
         &self,
         _body: dap::requests::StackTraceArguments,
     ) -> dap::responses::StackTraceResponse {
+        println!("Return trace");
+
         let concrete_trace = self.debug_trace.borrow().trace();
         let len_frames = concrete_trace.stack_frames.len();
 
         let traces = concrete_trace
             .stack_frames
             .into_iter()
+            .rev()
             .enumerate()
             .map(|(i, trace)| {
                 let source_location = trace.location;
@@ -429,6 +432,8 @@ impl Debugger {
                         return Err(eyre::eyre!("No value found in stack at index {}", index));
                     }
                 };
+
+                println!("print location {:?}", variable.location);
 
                 match variable.location {
                     VariableLocation::Stack => {

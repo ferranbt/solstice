@@ -778,6 +778,12 @@ fn run_dap_server(workspace_path: &str) -> u64 {
 
         let (debug_trace, _) = generate_trace(&workspace_path, TEMP_FORGE_DUMP_PATH).unwrap();
 
+        std::fs::write(
+            "/tmp/full_trace_dump.json",
+            serde_json::to_string(&debug_trace).unwrap(),
+        )
+        .unwrap();
+
         let mut server = DapServer::new(input, output);
         server.serve(|client| DapDebugger::new(client, debug_trace));
     });

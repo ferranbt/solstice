@@ -19,10 +19,15 @@ contract FooTest is Test {
         value_storage = 2;
         value_storage = 3;
         value = value + simple_call();
+        value = value + call_with_params(11, 22);
         assert(value != block.number);
     }
 
     function simple_call() private returns (uint256) {
         return block.number + 2;
+    }
+
+    function call_with_params(uint256 a, uint256 b) private returns (uint256) {
+        return a + b;
     }
 }
