@@ -6,4 +6,4 @@
 [STMT] 38:8 scope=[value, example]
 ---
 Variable: value = "0"
-Variable: example = "0x0000000000000000000000000000000000000000"
+Variable: example = "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f"

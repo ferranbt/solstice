@@ -1,5 +1,6 @@
 use alloy_primitives::hex;
 use alloy_primitives::Address;
+use alloy_primitives::Bytes;
 use alloy_primitives::FixedBytes;
 use alloy_primitives::I256;
 use alloy_primitives::U256;
@@ -859,6 +860,127 @@ impl From<StackType> for Type {
     }
 }
 
+pub fn resolve_memory_assignment(
+    typ: Type,
+    offset_bytes: usize,
+    memory: Bytes,
+) -> serde_json::Value {
+    match typ {
+        Type::String | Type::Bytes => {
+            // Read the length from the first 32 bytes at the offset
+            if offset_bytes + 32 > memory.len() {
+                return serde_json::Value::Null;
+            }
+
+            let length_bytes = &memory[offset_bytes..offset_bytes + 32];
+            let length = U256::from_be_bytes::<32>(length_bytes.try_into().unwrap());
+            let length_usize = length.as_limbs()[0] as usize;
+
+            // Read the actual string data that follows the length
+            let data_offset = offset_bytes + 32;
+            if data_offset + length_usize > memory.len() {
+                return serde_json::Value::Null;
+            }
+
+            let string_bytes = memory[data_offset..data_offset + length_usize].to_vec();
+            typ.decode_bytes(&string_bytes).unwrap()
+        }
+        Type::Array(TypeArray { ty, size }) => {
+            // For fixed-size arrays, use the offset directly
+            // For dynamic arrays, the offset points to the length
+            let (length, data_offset) = match size {
+                Some(fixed_size) => (fixed_size as usize, offset_bytes), // Use offset directly
+                None => {
+                    // For dynamic arrays, read length from first 32 bytes
+                    if offset_bytes + 32 > memory.len() {
+                        return serde_json::Value::Null;
+                    }
+                    let length_bytes = &memory[offset_bytes..offset_bytes + 32];
+                    let length = U256::from_be_bytes::<32>(length_bytes.try_into().unwrap());
+                    (length.as_limbs()[0] as usize, offset_bytes + 32)
+                }
+            };
+
+            let mut values = Vec::new();
+            let mut current_offset = data_offset;
+
+            // Process each array element
+            for _i in 0..length {
+                let val_offset = match *ty {
+                    Type::Address
+                    | Type::Bool
+                    | Type::Uint(_)
+                    | Type::Int(_)
+                    | Type::Enum(_)
+                    | Type::FixedBytes(_) => current_offset,
+                    _ => {
+                        // there is a dual reference here for internal elements
+                        let val = &memory[current_offset..current_offset + 32];
+                        let val = U256::from_be_bytes::<32>(val.try_into().unwrap());
+                        let val = val.as_limbs()[0] as usize;
+                        val
+                    }
+                };
+
+                let element_value =
+                    resolve_memory_assignment((*ty).clone(), val_offset, memory.clone());
+
+                values.push(element_value);
+                current_offset += 32;
+            }
+
+            serde_json::Value::Array(values)
+        }
+        Type::Tuple(tuple) => {
+            let mut map = serde_json::Map::new();
+            let mut current_offset = offset_bytes;
+
+            for (name, ty) in tuple.types {
+                let val_offset = match ty {
+                    Type::Address
+                    | Type::Bool
+                    | Type::Uint(_)
+                    | Type::Int(_)
+                    | Type::Enum(_)
+                    | Type::FixedBytes(_) => current_offset,
+                    _ => {
+                        // there is a dual reference here for internal elements
+                        let val = &memory[current_offset..current_offset + 32];
+                        let val = U256::from_be_bytes::<32>(val.try_into().unwrap());
+                        let val = val.as_limbs()[0] as usize;
+                        val
+                    }
+                };
+
+                let value = resolve_memory_assignment(ty.clone(), val_offset, memory.clone());
+                map.insert(name, value);
+
+                // For all types except Mapping, advance the offset by 32 bytes
+                match ty {
+                    Type::Mapping(_) => {}
+                    _ => current_offset += 32,
+                }
+            }
+
+            serde_json::Value::Object(map)
+        }
+        _ => {
+            // match basic elements
+            // get the slot for 32 bytes and size items from the right
+            let value_bytes = &memory[offset_bytes..offset_bytes + 32];
+            let typ_size = typ.get_bytes();
+
+            // fixed bytes pads to the left and the other elements pads to the right
+            let value_bytes = match typ {
+                Type::FixedBytes(_) => value_bytes[0..typ_size as usize].to_vec(),
+                _ => value_bytes[32 - typ_size as usize..].to_vec(),
+            };
+
+            typ.decode_bytes(&value_bytes).unwrap()
+        }
+    }
+}
+
 #[cfg(test)]
 pub mod testing {
     use super::*;
@@ -1212,127 +1334,6 @@ pub mod testing {
     struct Assignment {
         variable: Variable,
         stack_index: usize,
-    }
-
-    fn resolve_memory_assignment(
-        typ: Type,
-        offset_bytes: usize,
-        memory: Bytes,
-    ) -> serde_json::Value {
-        match typ {
-            Type::String | Type::Bytes => {
-                // Read the length from the first 32 bytes at the offset
-                if offset_bytes + 32 > memory.len() {
-                    return serde_json::Value::Null;
-                }
-
-                let length_bytes = &memory[offset_bytes..offset_bytes + 32];
-                let length = U256::from_be_bytes::<32>(length_bytes.try_into().unwrap());
-                let length_usize = length.as_limbs()[0] as usize;
-
-                // Read the actual string data that follows the length
-                let data_offset = offset_bytes + 32;
-                if data_offset + length_usize > memory.len() {
-                    return serde_json::Value::Null;
-                }
-
-                let string_bytes = memory[data_offset..data_offset + length_usize].to_vec();
-                typ.decode_bytes(&string_bytes).unwrap()
-            }
-            Type::Array(TypeArray { ty, size }) => {
-                // For fixed-size arrays, use the offset directly
-                // For dynamic arrays, the offset points to the length
-                let (length, data_offset) = match size {
-                    Some(fixed_size) => (fixed_size as usize, offset_bytes), // Use offset directly
-                    None => {
-                        // For dynamic arrays, read length from first 32 bytes
-                        if offset_bytes + 32 > memory.len() {
-                            return serde_json::Value::Null;
-                        }
-                        let length_bytes = &memory[offset_bytes..offset_bytes + 32];
-                        let length = U256::from_be_bytes::<32>(length_bytes.try_into().unwrap());
-                        (length.as_limbs()[0] as usize, offset_bytes + 32)
-                    }
-                };
-
-                let mut values = Vec::new();
-                let mut current_offset = data_offset;
-
-                // Process each array element
-                for _i in 0..length {
-                    let val_offset = match *ty {
-                        Type::Address
-                        | Type::Bool
-                        | Type::Uint(_)
-                        | Type::Int(_)
-                        | Type::Enum(_)
-                        | Type::FixedBytes(_) => current_offset,
-                        _ => {
-                            // there is a dual reference here for internal elements
-                            let val = &memory[current_offset..current_offset + 32];
-                            let val = U256::from_be_bytes::<32>(val.try_into().unwrap());
-                            let val = val.as_limbs()[0] as usize;
-                            val
-                        }
-                    };
-
-                    let element_value =
-                        resolve_memory_assignment((*ty).clone(), val_offset, memory.clone());
-
-                    values.push(element_value);
-                    current_offset += 32;
-                }
-
-                serde_json::Value::Array(values)
-            }
-            Type::Tuple(tuple) => {
-                let mut map = serde_json::Map::new();
-                let mut current_offset = offset_bytes;
-
-                for (name, ty) in tuple.types {
-                    let val_offset = match ty {
-                        Type::Address
-                        | Type::Bool
-                        | Type::Uint(_)
-                        | Type::Int(_)
-                        | Type::Enum(_)
-                        | Type::FixedBytes(_) => current_offset,
-                        _ => {
-                            // there is a dual reference here for internal elements
-                            let val = &memory[current_offset..current_offset + 32];
-                            let val = U256::from_be_bytes::<32>(val.try_into().unwrap());
-                            let val = val.as_limbs()[0] as usize;
-                            val
-                        }
-                    };
-
-                    let value = resolve_memory_assignment(ty.clone(), val_offset, memory.clone());
-                    map.insert(name, value);
-
-                    // For all types except Mapping, advance the offset by 32 bytes
-                    match ty {
-                        Type::Mapping(_) => {}
-                        _ => current_offset += 32,
-                    }
-                }
-
-                serde_json::Value::Object(map)
-            }
-            _ => {
-                // match basic elements
-                // get the slot for 32 bytes and size items from the right
-                let value_bytes = &memory[offset_bytes..offset_bytes + 32];
-                let typ_size = typ.get_bytes();
-
-                // fixed bytes pads to the left and the other elements pads to the right
-                let value_bytes = match typ {
-                    Type::FixedBytes(_) => value_bytes[0..typ_size as usize].to_vec(),
-                    _ => value_bytes[32 - typ_size as usize..].to_vec(),
-                };
-
-                typ.decode_bytes(&value_bytes).unwrap()
-            }
-        }
     }
 
     #[derive(Error, Debug)]

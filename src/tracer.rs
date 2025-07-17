@@ -298,6 +298,7 @@ enum StatementVisitorError {
     ParseError,
     MissingAttribute(String),
     IncorrectType(NodeType, NodeType),
+    UnexpectedStorageLocation(String),
 }
 
 impl Display for StatementVisitorError {
@@ -313,6 +314,9 @@ impl Display for StatementVisitorError {
                 "IncorrectType: expected {:?}, got {:?}",
                 expected, actual
             ),
+            StatementVisitorError::UnexpectedStorageLocation(loc) => {
+                write!(f, "UnexpectedStorageLocation: {loc}")
+            }
         }
     }
 }
@@ -779,11 +783,24 @@ impl StatementVisitor {
             let type_name = declaration.attribute::<Node>("typeName").unwrap();
             let is_constant = declaration.attribute::<bool>("constant").unwrap();
 
+            let storage_location = match declaration.attribute::<String>("storageLocation") {
+                Some(loc) => {
+                    if loc == "memory" {
+                        VariableLocation::Memory
+                    } else if loc == "default" {
+                        VariableLocation::Stack
+                    } else {
+                        return Err(StatementVisitorError::UnexpectedStorageLocation(loc));
+                    }
+                }
+                None => VariableLocation::Stack,
+            };
+
             return Ok(Some(Variable {
                 name,
                 id: node.id.unwrap() as u64,
                 state_variable: false,
-                location: VariableLocation::Stack, // Assuming memory for non-state variables, TODO: add memory example
+                location: storage_location,
                 is_constant,
                 type_name,
             }));
@@ -1528,6 +1545,7 @@ pub struct Block {
 #[derive(Debug, Clone, Serialize)]
 pub enum VariableLocation {
     Storage,
+    Memory,
     Stack,
 }
 
@@ -2081,12 +2099,11 @@ mod tests {
 
                 // resolve each variable
                 let mut state_result = String::new();
-                // TODO: Handle memory state resolution. The 'test_with_struct_value' uses a struct in memory.
                 for var in vars_in_scope {
                     if let Some(result) = debugger.get_variable(var.id).unwrap() {
                         // TODO: Handle function parameters
-                        let value: String = serde_json::from_str(&result.variables[0].value)?;
-                        state_result += &format!("Variable: {} = {:?}\n", var.name, value);
+                        let value = &result.variables[0].value;
+                        state_result += &format!("Variable: {} = {}\n", var.name, value);
                     }
                 }
 

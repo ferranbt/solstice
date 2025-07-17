@@ -1,4 +1,5 @@
 use alloy_primitives::FixedBytes;
+use alloy_primitives::U256;
 use dap::types::PresentationHint;
 use dap::types::StackFramePresentationhint;
 use dap::types::Thread;
@@ -12,7 +13,7 @@ use crate::dap::requests::{
 use crate::dap::responses::{SetBreakpointsResponse, ThreadsResponse, VariablesResponse};
 use crate::dap::Client;
 use crate::dap::Service;
-use crate::state::{StateReference, Type};
+use crate::state::{resolve_memory_assignment, StateReference, Type};
 use crate::tracer::VariableLocation;
 use crate::tracer::{Assignment, DebugTrace, DebugTraceStep, StepKind, Variable};
 
@@ -421,8 +422,6 @@ impl Debugger {
                 }))
             }
             Assignment::Stack(index) => {
-                tracing::info!("Variable is in stack, index: {:?}", index);
-
                 let value = match step.state_snapshot.stack.get(index).cloned() {
                     Some(value) => value,
                     None => {
@@ -430,16 +429,16 @@ impl Debugger {
                     }
                 };
 
+                let typ = self
+                    .trace
+                    .variable_types
+                    .get(&variable.id)
+                    .cloned()
+                    .unwrap();
+
                 match variable.location {
                     VariableLocation::Stack => {
                         tracing::info!("Variable is in stack, value: {:?}", value);
-
-                        let typ = self
-                            .trace
-                            .variable_types
-                            .get(&variable.id)
-                            .cloned()
-                            .unwrap();
                         let typ_size = typ.get_bytes();
 
                         // fixed bytes pads to the left and the other elements pads to the right
@@ -467,7 +466,28 @@ impl Debugger {
                             variables: vec![var],
                         }))
                     }
-                    _ => unreachable!("Variable storage handled in the other case"),
+                    VariableLocation::Memory => {
+                        let offset =
+                            U256::from_be_bytes(<[u8; 32]>::try_from(value.as_ref()).unwrap());
+                        let offset_bytes = offset.as_limbs()[0] as usize;
+
+                        let value = resolve_memory_assignment(
+                            typ.clone(),
+                            offset_bytes,
+                            step.state_snapshot.memory.clone(),
+                        );
+
+                        let var = dap::types::Variable {
+                            name: variable.name.clone(),
+                            value: value.to_string(),
+                            ..Default::default()
+                        };
+
+                        Ok(Some(VariablesResponse {
+                            variables: vec![var],
+                        }))
+                    }
+                    _ => unreachable!("Unexpected variable location: {:?}", variable.location),
                 }
             }
         }
