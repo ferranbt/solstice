@@ -148,7 +148,7 @@ impl Type {
                     let underlying_bytes = ty.get_bytes();
                     if underlying_bytes < 32 {
                         let items_per_slot = 32 / underlying_bytes;
-                        (size + items_per_slot - 1) / items_per_slot
+                        size.div_ceil(items_per_slot)
                     } else {
                         size * ty.num_storage_slots()
                     }
