@@ -761,8 +761,6 @@ impl StatementVisitor {
             let type_name = node.attribute::<Node>("typeName").unwrap();
             let is_constant = node.attribute::<bool>("constant").unwrap();
 
-            println!("name: {name}, node: {node:?}");
-
             let storage_location = match node
                 .attribute::<String>("storageLocation")
                 .ok_or_missing_attribute("storageLocation")?
