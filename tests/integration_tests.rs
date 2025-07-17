@@ -65,7 +65,7 @@ async fn test_repo(
 #[tokio::test]
 async fn integration_tests() -> eyre::Result<()> {
     test_repo(
-        "git@github.com:Uniswap/v4-core.git",
+        "https://github.com/Uniswap/v4-core.git",
         "v4-core",
         "test/CurrencyReserves.t.sol",
         "test_getReserves_returns_set",
