@@ -359,6 +359,12 @@ impl Debugger {
         self.next()
     }
 
+    #[cfg(test)]
+    pub fn last(&mut self) {
+        // go to the last step in the trace
+        self.indx = self.trace.steps.len() - 1;
+    }
+
     pub fn scope(&self) -> Vec<Variable> {
         self.trace.scope(self.indx)
     }

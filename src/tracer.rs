@@ -1742,6 +1742,7 @@ const SKIP_TRACE_LIST: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debugger::Debugger;
     use crate::state::testing::compile_contract;
     use std::fmt::{Display, Write};
     use std::path::PathBuf;
@@ -2068,18 +2069,39 @@ mod tests {
                 debug_trace_json,
             )?;
 
-            let formatted = debug_trace.to_debug_format(workspace_path, &trace_context);
+            let mut formatted = debug_trace.to_debug_format(workspace_path, &trace_context);
+
+            let expected = fs::read_to_string(trace_test_case.expected_path).unwrap();
+            if expected.contains("---") {
+                // Include the state snapshot in the formatted output
+                let mut debugger = Debugger::new(debug_trace);
+                debugger.last();
+
+                let vars_in_scope = debugger.scope();
+
+                // resolve each variable
+                let mut state_result = String::new();
+                // TODO: Handle memory state resolution. The 'test_with_struct_value' uses a struct in memory.
+                for var in vars_in_scope {
+                    if let Some(result) = debugger.get_variable(var.id).unwrap() {
+                        // TODO: Handle function parameters
+                        let value: String = serde_json::from_str(&result.variables[0].value)?;
+                        state_result += &format!("Variable: {} = {:?}\n", var.name, value);
+                    }
+                }
+
+                formatted += &format!("---\n{}", state_result);
+            }
+
             std::fs::write(
                 format!("{}/debug_trace.txt", log_output_dir),
                 formatted.clone(),
             )?;
 
-            let expected = fs::read_to_string(trace_test_case.expected_path).unwrap();
-
             println!("{}", formatted);
             println!("{}", expected);
 
-            assert_eq!(formatted, expected);
+            assert_eq!(formatted, expected, "incorrect trace");
         }
 
         Ok(())

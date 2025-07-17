@@ -29,3 +29,6 @@
     [STMT] 9:12 scope=[val]
   [STMT] 28:12 scope=[cc, result, value]
 [STMT] 17:8 scope=[cc, result]
+---
+Variable: cc = "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f"
+Variable: result = "3"
