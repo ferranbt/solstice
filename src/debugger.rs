@@ -163,6 +163,7 @@ impl Service for DapDebugger {
         let traces = concrete_trace
             .stack_frames
             .into_iter()
+            .rev()
             .enumerate()
             .map(|(i, trace)| {
                 let source_location = trace.location;

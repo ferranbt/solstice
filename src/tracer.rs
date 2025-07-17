@@ -157,9 +157,12 @@ fn generate_debug_units(
                                 trace_context.structs.insert(node_id, node.clone());
                             } else if node.node_type == NodeType::VariableDeclaration {
                                 // not sure if I have to filter by stateVariable here
-                                let variable = StatementVisitor::build_debug_variable(node)
-                                    .expect("variable")
-                                    .unwrap();
+                                let variable = StatementVisitor::build_debug_variable(
+                                    node,
+                                    VariableLocation::Storage,
+                                )
+                                .expect("variable")
+                                .unwrap();
 
                                 trace_context.state_variables.insert(node_id, variable);
                                 contract_state_variables.push(node_id);
@@ -593,7 +596,9 @@ impl StatementVisitor {
                     }
                 }
                 NodeType::VariableDeclarationStatement => {
-                    let var = if let Some(var) = Self::build_debug_variable(statement)? {
+                    let var = if let Some(var) =
+                        Self::build_debug_variable(statement, VariableLocation::Stack)?
+                    {
                         var
                     } else {
                         continue;
@@ -747,23 +752,37 @@ impl StatementVisitor {
         Ok(())
     }
 
-    fn build_debug_variable(node: &Node) -> StatementVisitorResult<Option<Variable>> {
+    fn build_debug_variable(
+        node: &Node,
+        default_location: VariableLocation,
+    ) -> StatementVisitorResult<Option<Variable>> {
         if let Some(name) = node.attribute("name") {
+            // Code path for state variables and function parameters
             let type_name = node.attribute::<Node>("typeName").unwrap();
             let is_constant = node.attribute::<bool>("constant").unwrap();
+
+            let storage_location = VariableLocation::from_str(
+                node.attribute::<String>("storageLocation")
+                    .ok_or_missing_attribute("storageLocation")?
+                    .as_str(),
+                default_location,
+            )?;
+
+            let state_variable = storage_location == VariableLocation::Storage;
 
             // this is most likely a state variable
             if let Some(id) = node.id {
                 return Ok(Some(Variable {
                     name,
                     id: id as u64,
-                    state_variable: true,
-                    location: VariableLocation::Storage,
+                    state_variable,
+                    location: storage_location,
                     is_constant,
                     type_name,
                 }));
             }
         } else {
+            // code path for block variables
             let declarations = match node.attribute::<Vec<Node>>("declarations") {
                 Some(dec) => dec,
                 None => {
@@ -783,18 +802,13 @@ impl StatementVisitor {
             let type_name = declaration.attribute::<Node>("typeName").unwrap();
             let is_constant = declaration.attribute::<bool>("constant").unwrap();
 
-            let storage_location = match declaration.attribute::<String>("storageLocation") {
-                Some(loc) => {
-                    if loc == "memory" {
-                        VariableLocation::Memory
-                    } else if loc == "default" {
-                        VariableLocation::Stack
-                    } else {
-                        return Err(StatementVisitorError::UnexpectedStorageLocation(loc));
-                    }
-                }
-                None => VariableLocation::Stack,
-            };
+            let storage_location = VariableLocation::from_str(
+                declaration
+                    .attribute::<String>("storageLocation")
+                    .ok_or_missing_attribute("storageLocation")?
+                    .as_str(),
+                default_location,
+            )?;
 
             return Ok(Some(Variable {
                 name,
@@ -834,7 +848,7 @@ impl StatementVisitor {
                 ));
             }
 
-            if let Some(var) = Self::build_debug_variable(&param)? {
+            if let Some(var) = Self::build_debug_variable(&param, VariableLocation::Stack)? {
                 let mut var = var.clone();
                 var.state_variable = false;
 
@@ -932,9 +946,13 @@ impl DebugUnit {
         ) -> (Option<MatchResult>, Vec<usize>) {
             let mut vars_in_scope = parent_vars.clone();
 
-            // add the variables from the block itself, for example, variable declared in a
-            // try statement.
-            vars_in_scope.extend(block.variables.iter().copied());
+            // Check the condition statement first before we start to accumulate the vars_in_scope
+            // The condition statement does not have in scope any of the variables defined in the block
+            if let Some(cond) = &block.condition {
+                if cond.loc.matches(loc) {
+                    return (Some(MatchResult::Instruction(cond.clone())), vars_in_scope);
+                }
+            }
 
             for inst in &block.instructions {
                 if let InstructionKind::VariableDeclaration(id) = inst.kind {
@@ -952,25 +970,13 @@ impl DebugUnit {
                 }
             }
 
-            // cond not done yet?
-            if let Some(cond) = &block.condition {
-                if cond.loc.matches(loc) {
-                    return (Some(MatchResult::Instruction(cond.clone())), vars_in_scope);
-                }
-            }
-
             (None, vec![])
         }
 
         // try to find exact match by brute force for now
         for func in self.functions.values() {
             // Initialize vars_in_scope with state variable IDs
-            let mut vars_in_scope: Vec<usize> = self
-                .variables
-                .iter()
-                .filter(|v| v.state_variable)
-                .map(|v| v.id as usize)
-                .collect();
+            let mut vars_in_scope: Vec<usize> = vec![];
 
             // we track other state variables in this other place
             // TODO: deprecate the previous one. I am still unsure if we still need it, I will keep it
@@ -1356,6 +1362,19 @@ pub fn generate_trace(
                     call_trace.push((func, steps.len() - 1));
                 }
 
+                // add the parameters to the assignments table
+                let num_params = func.parameters.len();
+                let stack_len = i.state_snapshot.stack.len();
+
+                // The parameters are located in the stack as the last elements in order
+                // in which they are defined in the function. For example, if a function
+                // has two parameters, the first one will be at stack_len - 2 and the
+                // second one at stack_len - 1.
+                for (i, param) in func.parameters.iter().enumerate() {
+                    let stack_pos = stack_len - num_params + i;
+                    assignments.insert(param.id, Assignment::Stack(stack_pos));
+                }
+
                 steps.push(DebugStep {
                     location: func.root_block.location.clone(),
                     path,
@@ -1542,11 +1561,27 @@ pub struct Block {
     pub location: SourceLocation,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum VariableLocation {
     Storage,
     Memory,
     Stack,
+    Calldata,
+}
+
+impl VariableLocation {
+    fn from_str(s: &str, default: VariableLocation) -> Result<Self, StatementVisitorError> {
+        match s {
+            "storage" => Ok(VariableLocation::Storage),
+            "memory" => Ok(VariableLocation::Memory),
+            "stack" => Ok(VariableLocation::Stack),
+            "calldata" => Ok(VariableLocation::Calldata),
+            "default" => Ok(default),
+            _ => Err(StatementVisitorError::UnexpectedStorageLocation(
+                s.to_string(),
+            )),
+        }
+    }
 }
 
 // Variable is a parsed representation of the Variable declaration NodeType in the AST.
@@ -2046,6 +2081,8 @@ mod tests {
 
         let filter_trace = std::env::var("FILTER_TRACE").unwrap_or_default();
 
+        let override_tests = std::env::var("OVERRIDE_TESTS").unwrap_or_default() != "";
+
         let test_traces = get_trace_test_cases(workspace_path);
         for trace_test_case in test_traces {
             // If the FILTER_TRACE env variable is set, only run the trace for the function
@@ -2089,7 +2126,7 @@ mod tests {
 
             let mut formatted = debug_trace.to_debug_format(workspace_path, &trace_context);
 
-            let expected = fs::read_to_string(trace_test_case.expected_path).unwrap();
+            let expected = fs::read_to_string(trace_test_case.expected_path.clone()).unwrap();
             if expected.contains("---") {
                 // Include the state snapshot in the formatted output
                 let mut debugger = Debugger::new(debug_trace);
@@ -2114,6 +2151,12 @@ mod tests {
                 format!("{}/debug_trace.txt", log_output_dir),
                 formatted.clone(),
             )?;
+
+            if override_tests {
+                // Override the expected file with the new trace
+                fs::write(trace_test_case.expected_path, formatted.clone())?;
+                continue;
+            }
 
             println!("{}", formatted);
             println!("{}", expected);
