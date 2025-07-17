@@ -9,19 +9,19 @@
     [STMT] 9:12 scope=[val]
     [STMT] 32:8 scope=[val]
   [CALL] 21:8
-  [STMT] 22:12 scope=[cc, result, value, returnValue]
+  [STMT] 22:12 scope=[cc, result, value]
 [CALL] 14:8
 [FUNC] try_fail (test/try_catch.t.sol:20)
   [CALL] 21:8
   [FUNC] fail (src/try_catch.sol:8)
     [STMT] 9:12 scope=[val]
-  [STMT] 24:12 scope=[cc, result, value, reason]
+  [STMT] 24:12 scope=[cc, result, value]
 [CALL] 15:8
 [FUNC] try_fail (test/try_catch.t.sol:20)
   [CALL] 21:8
   [FUNC] fail (src/try_catch.sol:8)
     [STMT] 9:12 scope=[val]
-  [STMT] 26:12 scope=[cc, result, value, errorCode]
+  [STMT] 26:12 scope=[cc, result, value]
 [CALL] 16:8
 [FUNC] try_fail (test/try_catch.t.sol:20)
   [CALL] 21:8
