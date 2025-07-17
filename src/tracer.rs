@@ -150,10 +150,10 @@ fn generate_debug_units(
                         contract_node.nodes.iter().for_each(|node| {
                             let node_id = node.id.unwrap();
 
-                            if node.node_type == NodeType::StructDefinition {
-                                trace_context.structs.insert(node_id, node.clone());
-                            } else if node.node_type == NodeType::EnumDefinition {
-                                let node_id = node.id.unwrap();
+                            if node.node_type == NodeType::StructDefinition
+                                || node.node_type == NodeType::UserDefinedValueTypeDefinition
+                                || node.node_type == NodeType::EnumDefinition
+                            {
                                 trace_context.structs.insert(node_id, node.clone());
                             } else if node.node_type == NodeType::VariableDeclaration {
                                 // not sure if I have to filter by stateVariable here
@@ -169,11 +169,10 @@ fn generate_debug_units(
                         trace_context
                             .contract_state_variables
                             .insert(contract_node.id.unwrap(), contract_state_variables);
-                    } else if node.node_type == NodeType::StructDefinition {
-                        // struct defined outside of a contract
-                        let node_id = node.id.unwrap();
-                        trace_context.structs.insert(node_id, node.clone());
-                    } else if node.node_type == NodeType::EnumDefinition {
+                    } else if node.node_type == NodeType::StructDefinition
+                        || node.node_type == NodeType::UserDefinedValueTypeDefinition
+                        || node.node_type == NodeType::EnumDefinition
+                    {
                         let node_id = node.id.unwrap();
                         trace_context.structs.insert(node_id, node.clone());
                     }
@@ -240,18 +239,6 @@ fn generate_debug_units(
 
                                     debug_unit.insert(contract_name, dd);
                                 }
-                            }
-                            NodeType::UserDefinedValueTypeDefinition => {
-                                let node_id = node.id.unwrap();
-
-                                let underlying_type = node
-                                    .attribute::<Node>("underlyingType")
-                                    .ok_or_missing_attribute("underlyingType")
-                                    .unwrap();
-
-                                trace_context
-                                    .structs
-                                    .insert(node_id, underlying_type.clone());
                             }
                             _ => {}
                         }
@@ -430,6 +417,7 @@ impl StatementVisitor {
                 }
                 NodeType::EnumDefinition
                 | NodeType::UsingForDirective
+                | NodeType::UserDefinedValueTypeDefinition
                 | NodeType::ErrorDefinition => {
                     // TODO
                 }

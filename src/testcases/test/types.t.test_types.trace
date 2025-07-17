@@ -1,3 +1,5 @@
-[FUNC] test_types (test/types.t.sol:14)
-[STMT] 15:8 scope=[arg_0, arg_1]
-[STMT] 16:8 scope=[arg_0, arg_1]
+[FUNC] test_types (test/types.t.sol:18)
+[STMT] 19:8 scope=[arg_0, arg_1, arg_2, arg_3]
+[STMT] 20:8 scope=[arg_0, arg_1, arg_2, arg_3]
+[STMT] 21:8 scope=[arg_0, arg_1, arg_2, arg_3]
+[STMT] 22:8 scope=[arg_0, arg_1, arg_2, arg_3]
