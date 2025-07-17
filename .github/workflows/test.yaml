@@ -22,6 +22,21 @@ jobs:
       - name: Install Solidity compiler
         run: sudo ./scripts/ci/install-solc.sh
       - name: Run tests
-        run: |
-          export NUM_TESTS=200
-          cargo test
+        run: cargo test
+  run-fuzz-tests:
+    name: Run fuzz tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Solidity compiler
+        run: sudo ./scripts/ci/install-solc.sh
+      - name: Run tests
+        run: cargo test --package solstice --bin solstice -- state::fuzz --show-output
+        env:
+          FUZZ: 1
+          NUM_TESTS: 200

@@ -214,33 +214,30 @@ fn generate_debug_units(
                             deployed_bytecode.bytecode.as_ref().unwrap().clone();
                         let bytecode = artifact.bytecode.as_ref().unwrap().clone();
 
-                        match node.node_type {
-                            NodeType::ContractDefinition => {
-                                let contract_name = node.attribute::<String>("name").unwrap();
+                        if node.node_type == NodeType::ContractDefinition {
+                            let contract_name = node.attribute::<String>("name").unwrap();
 
-                                let mut linearized_base_contracts = node
-                                    .attribute::<Vec<usize>>("linearizedBaseContracts")
-                                    .unwrap();
-                                linearized_base_contracts.reverse();
+                            let mut linearized_base_contracts = node
+                                .attribute::<Vec<usize>>("linearizedBaseContracts")
+                                .unwrap();
+                            linearized_base_contracts.reverse();
 
-                                if contract_name == name {
-                                    let mut visitor = StatementVisitor::new(
-                                        deployed_bytecode,
-                                        bytecode,
-                                        source_absolute_path.to_str().unwrap().to_string(),
-                                        source,
-                                    );
-                                    visitor.visit_contract(&node.clone()).unwrap();
+                            if contract_name == name {
+                                let mut visitor = StatementVisitor::new(
+                                    deployed_bytecode,
+                                    bytecode,
+                                    source_absolute_path.to_str().unwrap().to_string(),
+                                    source,
+                                );
+                                visitor.visit_contract(&node.clone()).unwrap();
 
-                                    // just so that we can keep the reference around
-                                    let mut dd = visitor.debug_unit;
-                                    dd.source_id = artifact.id.unwrap();
-                                    dd.linearized_base_contracts = linearized_base_contracts;
+                                // just so that we can keep the reference around
+                                let mut dd = visitor.debug_unit;
+                                dd.source_id = artifact.id.unwrap();
+                                dd.linearized_base_contracts = linearized_base_contracts;
 
-                                    debug_unit.insert(contract_name, dd);
-                                }
+                                debug_unit.insert(contract_name, dd);
                             }
-                            _ => {}
                         }
                     }
                 });
@@ -1457,8 +1454,7 @@ pub fn generate_trace(
         let (offsets, _) = StateReference::compute_offsets(state_variables_as_tuple);
 
         for ((var, _), (_, offset)) in non_constante_state_variables.iter().zip(offsets.iter()) {
-            let var_id = var.id as u64;
-            assignments.insert(var_id, Assignment::Storage(offset.clone()));
+            assignments.insert(var.id, Assignment::Storage(*offset));
         }
     }
 
@@ -1746,7 +1742,7 @@ const SKIP_TRACE_LIST: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::compile_contract;
+    use crate::state::testing::compile_contract;
     use std::fmt::{Display, Write};
     use std::path::PathBuf;
 
