@@ -1,25 +1,15 @@
 use alloy_primitives::hex;
 use alloy_primitives::Address;
-use alloy_primitives::Bytes;
 use alloy_primitives::FixedBytes;
 use alloy_primitives::I256;
 use alloy_primitives::U256;
 use arbitrary::{Arbitrary, Unstructured};
 use core::panic;
-use foundry_compilers::artifacts::ast::{Ast, Node, NodeType};
-use foundry_compilers::artifacts::sourcemap::parse;
-use foundry_compilers::artifacts::BytecodeObject;
-use foundry_compilers::artifacts::CompactBytecode;
+use foundry_compilers::artifacts::ast::{Node, NodeType};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use std::io::Write;
-use std::process::Command;
-use std::process::Stdio;
-use std::str::FromStr;
-
-use crate::tracer::IcPcMap;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum Type {
@@ -228,582 +218,6 @@ impl<'a> Arbitrary<'a> for Type {
     }
 }
 
-#[derive(Clone, Debug)]
-struct SolidityValue {
-    setup_code: String,
-    value: JsonValue,
-}
-
-struct ContractGenerator<'a> {
-    typ: Type,
-    structs: Vec<String>,
-    u: &'a mut Unstructured<'a>,
-}
-
-impl<'a> ContractGenerator<'a> {
-    pub fn new(typ: Type, u: &'a mut Unstructured<'a>) -> Self {
-        Self {
-            typ,
-            structs: Vec::new(),
-            u,
-        }
-    }
-
-    pub fn build_memory(typ: Type, u: &'a mut Unstructured<'a>) -> GeneratedContract {
-        let mut generator = ContractGenerator::new(typ, u);
-        generator.build_memory_inner()
-    }
-
-    pub fn build_storage(typ: Type, u: &'a mut Unstructured<'a>) -> GeneratedContract {
-        let mut generator = ContractGenerator::new(typ, u);
-        generator.build_storage_inner()
-    }
-
-    pub fn build_stack(typ: Type, u: &'a mut Unstructured<'a>) -> GeneratedContract {
-        let mut generator = ContractGenerator::new(typ, u);
-        generator.build_stack_inner()
-    }
-
-    pub fn build_storage_inner(&mut self) -> GeneratedContract {
-        let tuple = match self.typ.clone() {
-            Type::Tuple(tuple) => tuple,
-            _ => panic!("Type is not a tuple"),
-        };
-
-        // First collect all struct definitions by running encode_argument
-        let mut state_vars = Vec::new();
-        for (inx, (_, ty)) in tuple.types.iter().enumerate() {
-            let name = format!("arg_{}", inx);
-            let type_str = self.encode_argument(&name, ty.clone());
-            state_vars.push((name, type_str));
-        }
-
-        // Then format the full contract
-        let struct_defs = self.structs.join("\n\n    ");
-        let vars = state_vars
-            .iter()
-            .map(|(k, v)| format!("    {} {};", v, k))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Generate setup code and collect values
-        let mut setup_code = String::new();
-        let mut values = serde_json::Map::new();
-
-        for (inx, (_, ty)) in tuple.types.iter().enumerate() {
-            let name = format!("arg_{}", inx);
-            let (setup, value) = self.generate_setup_code_2_with_value(&name, ty.clone());
-            setup_code.push_str(&setup);
-            setup_code.push('\n');
-            values.insert(name, value);
-        }
-
-        let setup_code = setup_code.trim_end();
-
-        let contract = format!(
-            "// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.0;
-
-contract ComplexTypes {{
-    {}
-    {}
-
-    function start() public {{
-        {}
-    }}
-}}
-",
-            struct_defs, vars, setup_code,
-        );
-
-        GeneratedContract {
-            source: contract,
-            values: JsonValue::Object(values),
-        }
-    }
-
-    pub fn encode_argument(&mut self, field_name: &str, ty: Type) -> String {
-        match ty {
-            Type::Tuple(tuple) => {
-                // Check if we've already generated this exact struct
-                let mut fields = String::new();
-                for (inx, (_, ty)) in tuple.types.iter().enumerate() {
-                    fields.push_str(&format!(
-                        "{} {};\n",
-                        self.encode_argument(&format!("field_{}", inx), ty.clone()),
-                        format!("field_{}", inx)
-                    ));
-                }
-
-                // Generate a new struct name
-                let struct_name = format!("Struct{}", self.structs.len() + 1);
-
-                // Add the struct definition
-                self.structs
-                    .push(format!("struct {} {{\n{}    }}", struct_name, fields));
-                struct_name
-            }
-            Type::Array(arr) => {
-                let base = self.encode_argument(field_name, *arr.ty);
-                match arr.size {
-                    Some(size) => format!("{}[{}]", base, size),
-                    None => format!("{}[]", base),
-                }
-            }
-            Type::Mapping(mapping) => {
-                let key = self.encode_argument(field_name, *mapping.key);
-                let value = self.encode_argument(field_name, *mapping.value);
-                format!("mapping({} => {})", key, value)
-            }
-            Type::Address => "address".to_string(),
-            Type::Bool => "bool".to_string(),
-            Type::String => "string".to_string(),
-            Type::Bytes => "bytes".to_string(),
-            Type::FixedBytes(size) => format!("bytes{}", size),
-            Type::Int(size) => match size {
-                Some(s) => format!("int{}", s),
-                None => "int256".to_string(),
-            },
-            Type::Uint(size) => match size {
-                Some(s) => format!("uint{}", s),
-                None => "uint256".to_string(),
-            },
-            Type::Enum(enum_type) => {
-                // Add the enum definition
-                self.structs.push(format!(
-                    "enum {} {{ {} }}",
-                    enum_type.name,
-                    enum_type.identifiers.join(", ")
-                ));
-
-                enum_type.name
-            }
-        }
-    }
-
-    fn generate_value(&mut self, field_name: &str, ty: &Type) -> SolidityValue {
-        match ty {
-            Type::Address
-            | Type::Bool
-            | Type::String
-            | Type::Bytes
-            | Type::FixedBytes(_)
-            | Type::Int(_)
-            | Type::Uint(_) => {
-                // Simple types just need a single value assignment
-                let value = self.generate_random_value(ty);
-                SolidityValue {
-                    setup_code: format!("{} = {};", field_name, self.value_to_literal(&value, ty)),
-                    value,
-                }
-            }
-            Type::Array(arr) => self.generate_array_value(field_name, arr),
-            Type::Tuple(tuple) => self.generate_struct_value(field_name, tuple),
-            Type::Mapping(mapping) => self.generate_mapping_value(field_name, mapping),
-            Type::Enum(enum_type) => {
-                let value = self.generate_random_value(&ty);
-
-                SolidityValue {
-                    setup_code: format!(
-                        "{} = {}.{};",
-                        field_name,
-                        enum_type.name,
-                        self.value_to_literal(&value, ty)
-                    ),
-                    value: value,
-                }
-            }
-        }
-    }
-
-    fn generate_array_value(&mut self, field_name: &str, arr: &TypeArray) -> SolidityValue {
-        let mut setup = String::new();
-        let mut values = Vec::new();
-
-        match arr.size {
-            Some(size) => {
-                // Fixed size array
-                for i in 0..size {
-                    let element = self.generate_value(&format!("{}[{}]", field_name, i), &arr.ty);
-                    setup.push_str(&element.setup_code);
-                    setup.push('\n');
-                    values.push(element.value);
-                }
-            }
-            None => {
-                // Dynamic array
-                for _ in 0..2 {
-                    setup.push_str(&format!("{}.push();\n", field_name));
-                    let element = self.generate_value(
-                        &format!("{}[{}.length - 1]", field_name, field_name),
-                        &arr.ty,
-                    );
-                    setup.push_str(&element.setup_code);
-                    setup.push('\n');
-                    values.push(element.value);
-                }
-            }
-        }
-
-        SolidityValue {
-            setup_code: setup.trim_end().to_string(),
-            value: JsonValue::Array(values),
-        }
-    }
-
-    fn generate_struct_value(&mut self, field_name: &str, tuple: &TypeTuple) -> SolidityValue {
-        let mut setup = String::new();
-        let mut values = serde_json::Map::new();
-
-        for (idx, (_, field_ty)) in tuple.types.iter().enumerate() {
-            let field = self.generate_value(&format!("{}.field_{}", field_name, idx), field_ty);
-            setup.push_str(&field.setup_code);
-            setup.push('\n');
-            values.insert(format!("field_{}", idx), field.value);
-        }
-
-        SolidityValue {
-            setup_code: setup.trim_end().to_string(),
-            value: JsonValue::Object(values),
-        }
-    }
-
-    fn generate_mapping_value(&mut self, field_name: &str, mapping: &TypeMapping) -> SolidityValue {
-        let mut setup = String::new();
-        let mut values = serde_json::Map::new();
-
-        for _ in 0..2 {
-            let key = self.generate_random_value(&mapping.key);
-            let key_literal = self.value_to_literal(&key, &mapping.key);
-
-            let value =
-                self.generate_value(&format!("{}[{}]", field_name, key_literal), &mapping.value);
-            setup.push_str(&value.setup_code);
-            setup.push('\n');
-            values.insert(key.to_string(), value.value);
-        }
-
-        SolidityValue {
-            setup_code: setup.trim_end().to_string(),
-            value: JsonValue::Object(values),
-        }
-    }
-
-    pub fn generate_setup_code_2_with_value(
-        &mut self,
-        field_name: &str,
-        ty: Type,
-    ) -> (String, JsonValue) {
-        let result = self.generate_value(field_name, &ty);
-        (result.setup_code, result.value)
-    }
-
-    fn generate_random_value(&mut self, ty: &Type) -> JsonValue {
-        match ty {
-            Type::Bool => {
-                let value = self.u.arbitrary::<bool>().unwrap_or(false);
-                JsonValue::Bool(value)
-            }
-            Type::String => {
-                // Generate a random string between 0 and 60 chars
-                let length = self.u.int_in_range(0..=60).unwrap_or(10);
-                let chars: String = (0..length)
-                    .map(|_| {
-                        // Use basic ASCII for readability
-                        let idx = self.u.int_in_range(b'a'..=b'z').unwrap_or(b'x');
-                        idx as char
-                    })
-                    .collect();
-                JsonValue::String(chars)
-            }
-            Type::Bytes | Type::FixedBytes(_) | Type::Address => {
-                let length = match ty {
-                    Type::Bytes => self.u.int_in_range(0..=60).unwrap_or(10),
-                    Type::FixedBytes(size) => *size as usize,
-                    Type::Address => 20,
-                    _ => panic!("Invalid type"),
-                };
-
-                let bytes: String = (0..length)
-                    .map(|_| {
-                        let byte = self.u.int_in_range(0..=255).unwrap_or(0);
-                        format!("{:02x}", byte)
-                    })
-                    .collect();
-
-                if *ty == Type::Address {
-                    let addr = alloy_primitives::Address::from_str(bytes.as_str()).unwrap();
-                    JsonValue::String(addr.to_string())
-                } else {
-                    JsonValue::String(format!("0x{}", bytes))
-                }
-            }
-            Type::Int(size) => {
-                let bytes = match size {
-                    Some(s) => (s / 8) as u32,
-                    None => 32,
-                };
-                // Just generate a small number that fits in the bytes
-                let num = if bytes <= 4 {
-                    self.u.int_in_range(-10i32..=10i32).unwrap_or(0)
-                } else {
-                    self.u.int_in_range(-1000i32..=1000i32).unwrap_or(0)
-                };
-                JsonValue::String(num.to_string())
-            }
-            Type::Uint(size) => {
-                let bytes = match size {
-                    Some(s) => (s / 8) as u32,
-                    None => 32,
-                };
-                // Just generate a small positive number that fits in the bytes
-                let num = if bytes <= 4 {
-                    self.u.int_in_range(0u32..=10u32).unwrap_or(0)
-                } else {
-                    self.u.int_in_range(0u32..=1000u32).unwrap_or(0)
-                };
-                JsonValue::String(num.to_string())
-            }
-            Type::Enum(enum_typ) => {
-                let num = self
-                    .u
-                    .int_in_range(0..=enum_typ.identifiers.len() - 1)
-                    .unwrap_or(0);
-                JsonValue::String(enum_typ.identifiers[num].clone())
-            }
-            _ => JsonValue::Null,
-        }
-    }
-
-    fn value_to_literal(&self, value: &JsonValue, ty: &Type) -> String {
-        match value {
-            JsonValue::String(s) if s.starts_with("0x") => {
-                match ty {
-                    Type::Address => s.clone(), // Keep addresses as 0x...
-                    Type::FixedBytes(_) => format!("hex\"{}\"", &s[2..]), // Convert fixed bytes to hex"..."
-                    Type::Bytes => format!("hex\"{}\"", &s[2..]), // Convert dynamic bytes to hex"..."
-                    _ => format!("hex\"{}\"", &s[2..]),
-                }
-            }
-            JsonValue::String(s) => match ty {
-                Type::Int(_) | Type::Uint(_) | Type::Enum(_) => s.clone(),
-                _ => format!("\"{}\"", s),
-            },
-            JsonValue::Number(n) => n.to_string(),
-            JsonValue::Bool(b) => b.to_string(),
-            _ => "0".to_string(),
-        }
-    }
-
-    pub fn build_memory_inner(&mut self) -> GeneratedContract {
-        let tuple = match self.typ.clone() {
-            Type::Tuple(tuple) => tuple,
-            _ => panic!("Type is not a tuple"),
-        };
-
-        // First collect all struct definitions and build type mapping
-        let mut state_vars = Vec::new();
-        let mut type_mapping = HashMap::new();
-
-        for (inx, (_, ty)) in tuple.types.iter().enumerate() {
-            let name = format!("arg_{}", inx);
-            let type_str = self.encode_argument(&name, ty.clone());
-            type_mapping.insert(inx, type_str.clone());
-            state_vars.push((name, type_str));
-        }
-
-        // Format the full contract
-        let struct_defs = self.structs.join("\n\n    ");
-
-        // Generate setup code and collect values
-        let mut setup_code = String::new();
-        let mut values = serde_json::Map::new();
-
-        // First declare all variables
-        for (inx, (name, type_str)) in state_vars.iter().enumerate() {
-            let declaration = match &tuple.types[inx].1 {
-                Type::Array(arr) => {
-                    if arr.size.is_none() {
-                        // For dynamic arrays, use the stored type mapping
-                        let array_type = match type_mapping.get(&inx).unwrap().strip_suffix("[]") {
-                            Some(base_type) => base_type,
-                            None => type_mapping.get(&inx).unwrap(), // Fallback
-                        };
-                        format!(
-                            "    {} memory {} = new {}[]({});\n",
-                            type_str, name, array_type, 2
-                        )
-                    } else {
-                        format!("    {} memory {};\n", type_str, name)
-                    }
-                }
-                _ => format!("    {} memory {};\n", type_str, name),
-            };
-            setup_code.push_str(&declaration);
-        }
-
-        // Then generate the assignments
-        for (inx, (_, ty)) in tuple.types.iter().enumerate() {
-            let name = format!("arg_{}", inx);
-            let (setup, value) = self.generate_setup_code_memory(&name, ty.clone());
-            setup_code.push_str(&setup);
-            setup_code.push('\n');
-            values.insert(name, value);
-        }
-
-        let setup_code = setup_code.trim_end();
-
-        let contract = format!(
-            "// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.0;
-
-contract ComplexTypes {{
-    {}
-
-    function start() public {{
-{}
-    }}
-}}
-",
-            struct_defs, setup_code,
-        );
-
-        GeneratedContract {
-            source: contract,
-            values: JsonValue::Object(values),
-        }
-    }
-
-    fn generate_setup_code_memory(&mut self, field_name: &str, ty: Type) -> (String, JsonValue) {
-        match ty {
-            Type::Array(arr) => {
-                let mut setup = String::new();
-                let mut values = Vec::new();
-
-                match arr.size {
-                    Some(size) => {
-                        // Fixed size array
-                        for i in 0..size {
-                            let (element_setup, element_value) = self.generate_setup_code_memory(
-                                &format!("{}[{}]", field_name, i),
-                                *arr.ty.clone(),
-                            );
-                            setup.push_str(&element_setup);
-                            setup.push('\n');
-                            values.push(element_value);
-                        }
-                    }
-                    None => {
-                        // Dynamic array - already initialized with new
-                        for i in 0..2 {
-                            let (element_setup, element_value) = self.generate_setup_code_memory(
-                                &format!("{}[{}]", field_name, i),
-                                *arr.ty.clone(),
-                            );
-                            setup.push_str(&element_setup);
-                            setup.push('\n');
-                            values.push(element_value);
-                        }
-                    }
-                }
-
-                (setup.trim_end().to_string(), JsonValue::Array(values))
-            }
-            Type::Tuple(tuple) => {
-                let mut setup = String::new();
-                let mut values = serde_json::Map::new();
-
-                for (idx, (_, field_ty)) in tuple.types.iter().enumerate() {
-                    let (field_setup, field_value) = self.generate_setup_code_memory(
-                        &format!("{}.field_{}", field_name, idx),
-                        field_ty.clone(),
-                    );
-                    setup.push_str(&field_setup);
-                    setup.push('\n');
-                    values.insert(format!("field_{}", idx), field_value);
-                }
-
-                (setup.trim_end().to_string(), JsonValue::Object(values))
-            }
-            Type::Enum(ref enum_type) => {
-                let value = self.generate_random_value(&ty);
-                (
-                    format!(
-                        "{} = {}.{};",
-                        field_name,
-                        enum_type.name,
-                        self.value_to_literal(&value, &ty)
-                    ),
-                    value,
-                )
-            }
-            _ => {
-                let value = self.generate_random_value(&ty);
-                (
-                    format!("{} = {};", field_name, self.value_to_literal(&value, &ty)),
-                    value,
-                )
-            }
-        }
-    }
-
-    pub fn build_stack_inner(&mut self) -> GeneratedContract {
-        let tuple = match self.typ.clone() {
-            Type::Tuple(tuple) => tuple,
-            _ => panic!("Type is not a tuple"),
-        };
-
-        // For stack variables, we need declarations and assignments
-        let mut declarations = String::new();
-        let mut assignments = String::new();
-        let mut values = serde_json::Map::new();
-
-        for (inx, (_, ty)) in tuple.types.iter().enumerate() {
-            // Only allow simple types for stack
-            match ty {
-                Type::Address | Type::Bool | Type::Uint(_) | Type::Int(_) | Type::FixedBytes(_) => {
-                    let name = format!("arg_{}", inx);
-                    let type_str = self.encode_argument(&name, ty.clone());
-
-                    // Declare the variable
-                    declarations.push_str(&format!("        {} {};\n", type_str, name));
-
-                    // Generate and assign the value
-                    let value = self.generate_random_value(ty);
-                    assignments.push_str(&format!(
-                        "        {} = {};\n",
-                        name,
-                        self.value_to_literal(&value, ty)
-                    ));
-                    values.insert(name, value);
-                }
-                _ => continue, // Skip complex types
-            }
-        }
-
-        let contract = format!(
-            "// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.0;
-
-contract ComplexTypes {{
-    function start() public {{
-        // Stack variables declarations
-{}
-        // Stack variables assignments
-{}
-    }}
-}}",
-            declarations.trim_end(),
-            assignments.trim_end()
-        );
-
-        GeneratedContract {
-            source: contract,
-            values: JsonValue::Object(values),
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TypeEnum {
     name: String,
@@ -840,6 +254,7 @@ enum MemoryType {
 }
 
 impl MemoryType {
+    #[cfg(test)]
     fn arbitrary_type(u: &mut Unstructured) -> arbitrary::Result<Type> {
         // Get number of elements (1-5)
         let num_elements = u.int_in_range(1..=5)?;
@@ -1219,6 +634,7 @@ impl StateReference {
         (offsets, position)
     }
 
+    #[cfg(test)]
     pub fn resolve_vars(&self, vars: Vec<(String, Type)>) -> JsonValue {
         let mut map = serde_json::Map::new();
 
@@ -1371,290 +787,10 @@ struct EnumMember {
     name: String,
 }
 
-fn extract_state_variables(ast: &Ast) -> eyre::Result<Vec<(String, Type)>> {
-    let mut structs = HashMap::new();
-
-    // loop over the structs first
-    for node in ast.nodes.iter() {
-        for child in node.nodes.iter() {
-            if child.node_type == NodeType::StructDefinition {
-                structs.insert(child.id.unwrap(), child.clone());
-            }
-            if child.node_type == NodeType::EnumDefinition {
-                structs.insert(child.id.unwrap(), child.clone());
-            }
-        }
-    }
-
-    let mut variables = Vec::new();
-
-    // loop over the variables then
-    for node in ast.nodes.iter() {
-        for child in node.nodes.iter() {
-            if child.node_type == NodeType::VariableDeclaration {
-                let typ = child.attribute::<Node>("typeName").unwrap();
-
-                let ty = parse_variable_declaration_type(&typ, &structs)?;
-                let name = child.attribute::<String>("name").unwrap();
-
-                variables.push((name, ty));
-            }
-        }
-    }
-
-    Ok(variables)
-}
-
-/// Recursively visits all nodes of a specified type in the AST and calls the provided callback
-pub fn visit_nodes<F>(node: &Node, target_type: NodeType, callback: &mut F)
-where
-    F: FnMut(&Node),
-{
-    // Check if current node matches target type
-    if node.node_type == target_type {
-        callback(node);
-    }
-
-    // Recursively visit all child nodes
-    for child in &node.nodes {
-        visit_nodes(child, target_type.clone(), callback);
-    }
-
-    // Some nodes may have additional children in other fields
-    // For example, body nodes in function definitions
-    if let Some(body) = &node.body {
-        visit_nodes(&body, target_type.clone(), callback);
-    }
-
-    // check declaratison for variable declaration statements
-    if let Some(declarations) = node.attribute::<Vec<Node>>("declarations") {
-        for declaration in declarations {
-            visit_nodes(&declaration, target_type.clone(), callback);
-        }
-    }
-
-    // Check the statements mark for body of a function
-    if let Some(statements) = node.attribute::<Vec<Node>>("statements") {
-        for statement in statements {
-            visit_nodes(&statement, target_type.clone(), callback);
-        }
-    }
-}
-
-/// Helper function that starts the traversal from the AST root
-pub fn visit_ast_nodes<F>(ast: &Ast, target_type: NodeType, mut callback: F)
-where
-    F: FnMut(&Node),
-{
-    for node in &ast.nodes {
-        visit_nodes(node, target_type.clone(), &mut callback);
-    }
-}
-
-#[derive(Clone, Debug)]
-enum Location {
-    Storage,
-    Memory,
-    Stack,
-}
-
-#[derive(Clone, Debug)]
-struct Variable {
-    name: String,
-    typ: Type,
-    location: Location,
-}
-
-fn extract_non_state_variables(ast: &Ast, bytecode: CompactBytecode) -> HashMap<usize, Variable> {
-    let mut structs = HashMap::new();
-    let mut variables = HashMap::new();
-
-    let source_map = parse(&bytecode.clone().source_map.unwrap()).unwrap();
-    let pc_ic_map = IcPcMap::new(&bytecode.bytes().unwrap());
-
-    // Collect all struct definitions
-    visit_ast_nodes(ast, NodeType::StructDefinition, |node| {
-        structs.insert(node.id.unwrap(), node.clone());
-    });
-
-    // Collect all enum definitions
-    visit_ast_nodes(ast, NodeType::EnumDefinition, |node| {
-        structs.insert(node.id.unwrap(), node.clone());
-    });
-
-    // Collect state variables
-    visit_ast_nodes(ast, NodeType::VariableDeclaration, |node: &Node| {
-        // Check if it's a state variable (not a parameter or local var)
-        let start = node.src.start as u32;
-        let length = node.src.length.unwrap() as u32;
-
-        let matches = source_map
-            .iter()
-            .enumerate()
-            .filter(|(_, elem)| elem.offset() == start && elem.length() == length)
-            .collect::<Vec<_>>();
-
-        let typ = node.attribute::<Node>("typeName").unwrap();
-
-        let ty = parse_variable_declaration_type(&typ, &structs).unwrap();
-        let name = node.attribute::<String>("name").unwrap();
-
-        let location = match node
-            .attribute::<String>("storageLocation")
-            .unwrap()
-            .as_str()
-        {
-            "storage" => Location::Storage,
-            "memory" => Location::Memory,
-            "default" => Location::Stack,
-            _ => unreachable!(),
-        };
-
-        // there can only be one match
-        // For types::Array I had to use first, for string there was only one match
-        let m = matches.first().unwrap();
-        let pc = pc_ic_map.get(m.0).unwrap();
-
-        variables.insert(
-            pc,
-            Variable {
-                name,
-                typ: ty,
-                location,
-            },
-        );
-    });
-
-    variables
-}
-
 #[derive(Serialize)]
 pub struct GeneratedContract {
     pub source: String,
     pub values: JsonValue,
-}
-
-#[derive(Clone, Debug)]
-struct Assignment {
-    variable: Variable,
-    stack_index: usize,
-}
-
-fn resolve_memory_assignment(typ: Type, offset_bytes: usize, memory: Bytes) -> serde_json::Value {
-    match typ {
-        Type::String | Type::Bytes => {
-            // Read the length from the first 32 bytes at the offset
-            if offset_bytes + 32 > memory.len() {
-                return serde_json::Value::Null;
-            }
-
-            let length_bytes = &memory[offset_bytes..offset_bytes + 32];
-            let length = U256::from_be_bytes::<32>(length_bytes.try_into().unwrap());
-            let length_usize = length.as_limbs()[0] as usize;
-
-            // Read the actual string data that follows the length
-            let data_offset = offset_bytes + 32;
-            if data_offset + length_usize > memory.len() {
-                return serde_json::Value::Null;
-            }
-
-            let string_bytes = memory[data_offset..data_offset + length_usize].to_vec();
-            typ.decode_bytes(&string_bytes).unwrap()
-        }
-        Type::Array(TypeArray { ty, size }) => {
-            // For fixed-size arrays, use the offset directly
-            // For dynamic arrays, the offset points to the length
-            let (length, data_offset) = match size {
-                Some(fixed_size) => (fixed_size as usize, offset_bytes), // Use offset directly
-                None => {
-                    // For dynamic arrays, read length from first 32 bytes
-                    if offset_bytes + 32 > memory.len() {
-                        return serde_json::Value::Null;
-                    }
-                    let length_bytes = &memory[offset_bytes..offset_bytes + 32];
-                    let length = U256::from_be_bytes::<32>(length_bytes.try_into().unwrap());
-                    (length.as_limbs()[0] as usize, offset_bytes + 32)
-                }
-            };
-
-            let mut values = Vec::new();
-            let mut current_offset = data_offset;
-
-            // Process each array element
-            for _i in 0..length {
-                let val_offset = match *ty {
-                    Type::Address
-                    | Type::Bool
-                    | Type::Uint(_)
-                    | Type::Int(_)
-                    | Type::Enum(_)
-                    | Type::FixedBytes(_) => current_offset,
-                    _ => {
-                        // there is a dual reference here for internal elements
-                        let val = &memory[current_offset..current_offset + 32];
-                        let val = U256::from_be_bytes::<32>(val.try_into().unwrap());
-                        let val = val.as_limbs()[0] as usize;
-                        val
-                    }
-                };
-
-                let element_value =
-                    resolve_memory_assignment((*ty).clone(), val_offset, memory.clone());
-
-                values.push(element_value);
-                current_offset += 32;
-            }
-
-            serde_json::Value::Array(values)
-        }
-        Type::Tuple(tuple) => {
-            let mut map = serde_json::Map::new();
-            let mut current_offset = offset_bytes;
-
-            for (name, ty) in tuple.types {
-                let val_offset = match ty {
-                    Type::Address
-                    | Type::Bool
-                    | Type::Uint(_)
-                    | Type::Int(_)
-                    | Type::Enum(_)
-                    | Type::FixedBytes(_) => current_offset,
-                    _ => {
-                        // there is a dual reference here for internal elements
-                        let val = &memory[current_offset..current_offset + 32];
-                        let val = U256::from_be_bytes::<32>(val.try_into().unwrap());
-                        let val = val.as_limbs()[0] as usize;
-                        val
-                    }
-                };
-
-                let value = resolve_memory_assignment(ty.clone(), val_offset, memory.clone());
-                map.insert(name, value);
-
-                // For all types except Mapping, advance the offset by 32 bytes
-                match ty {
-                    Type::Mapping(_) => {}
-                    _ => current_offset += 32,
-                }
-            }
-
-            serde_json::Value::Object(map)
-        }
-        _ => {
-            // match basic elements
-            // get the slot for 32 bytes and size items from the right
-            let value_bytes = &memory[offset_bytes..offset_bytes + 32];
-            let typ_size = typ.get_bytes();
-
-            // fixed bytes pads to the left and the other elements pads to the right
-            let value_bytes = match typ {
-                Type::FixedBytes(_) => value_bytes[0..typ_size as usize].to_vec(),
-                _ => value_bytes[32 - typ_size as usize..].to_vec(),
-            };
-
-            typ.decode_bytes(&value_bytes).unwrap()
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1667,6 +803,7 @@ enum StackType {
 }
 
 impl StackType {
+    #[cfg(test)]
     fn arbitrary_type(u: &mut Unstructured) -> arbitrary::Result<Type> {
         // Get number of elements (1-5)
         let num_elements = u.int_in_range(1..=5)?;
@@ -1722,138 +859,10 @@ impl From<StackType> for Type {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CompilerOutput {
-    /// The creation bytecode
-    #[serde(rename = "bin")]
-    pub bin: Bytes,
-
-    #[serde(rename = "srcmap")]
-    pub srcmap: String,
-
-    /// The runtime bytecode
-    #[serde(rename = "bin-runtime")]
-    pub bin_runtime: Bytes,
-
-    #[serde(rename = "srcmap-runtime")]
-    pub srcmap_runtime: String,
-
-    pub ast: Ast,
-}
-
-impl CompilerOutput {
-    pub fn compact_bytecode(&self) -> CompactBytecode {
-        CompactBytecode {
-            object: BytecodeObject::Bytecode(self.bin.clone()),
-            source_map: Some(self.srcmap.clone()),
-            link_references: Default::default(),
-        }
-    }
-
-    pub fn compact_bytecode_deployed(&self) -> CompactBytecode {
-        CompactBytecode {
-            object: BytecodeObject::Bytecode(self.bin_runtime.clone()),
-            source_map: Some(self.srcmap_runtime.clone()),
-            link_references: Default::default(),
-        }
-    }
-
-    fn bytecode(&self) -> Bytes {
-        self.bin.clone()
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ContractOutput {
-    /// The creation bytecode
-    pub bin: Bytes,
-    /// The runtime bytecode
-    #[serde(rename = "bin-runtime")]
-    pub bin_runtime: Bytes,
-
-    #[serde(rename = "srcmap")]
-    pub srcmap: String,
-
-    #[serde(rename = "srcmap-runtime")]
-    pub srcmap_runtime: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SourceOutput {
-    #[serde(rename = "AST")]
-    pub ast: Ast,
-}
-
-pub fn compile_contract(source: &str) -> eyre::Result<CompilerOutput> {
-    let mut cmd = Command::new("solc")
-        .args([
-            "--combined-json",
-            "ast,bin,bin-runtime,srcmap,srcmap-runtime", // Get AST and both creation/runtime bytecode
-            "--pretty-json",                             // Make the output readable
-            "-",                                         // Read from stdin
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    // Write the source to stdin
-    if let Some(mut stdin) = cmd.stdin.take() {
-        stdin.write_all(source.as_bytes())?;
-    }
-
-    let output = cmd.wait_with_output()?;
-
-    if output.status.success() {
-        let json_output = String::from_utf8(output.stdout)
-            .map_err(|e| eyre::eyre!("Failed to parse solc output as UTF-8: {}", e))?;
-
-        {
-            // Create a unique test directory
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs();
-
-            let test_dir = format!("debug/test-{}", timestamp);
-            std::fs::create_dir_all(&test_dir)?;
-
-            // Write the Solidity source
-            std::fs::write(format!("{}/contract.sol", test_dir), source)?;
-
-            // Write the compiler output
-            std::fs::write(format!("{}/solc_output.json", test_dir), &json_output)?;
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct FullCompilerOutput {
-            contracts: HashMap<String, ContractOutput>,
-            sources: HashMap<String, SourceOutput>,
-        }
-
-        let parsed: FullCompilerOutput = serde_json::from_str(&json_output)
-            .map_err(|e| eyre::eyre!("Failed to parse compiler output: {}", e))?;
-
-        // there should be a single contract compiled
-        let contract = parsed.contracts.values().next().unwrap();
-        let source = parsed.sources.values().next().unwrap();
-
-        let output = CompilerOutput {
-            bin: contract.bin.clone(),
-            bin_runtime: contract.bin_runtime.clone(),
-            srcmap_runtime: contract.srcmap_runtime.clone(),
-            srcmap: contract.srcmap.clone(),
-            ast: source.ast.clone(),
-        };
-        Ok(output)
-    } else {
-        let error = String::from_utf8_lossy(&output.stderr);
-        Err(eyre::eyre!("Solidity compilation failed: {}", error))
-    }
-}
-
 #[cfg(test)]
-mod tests {
+pub mod testing {
     use super::*;
+    use alloy_primitives::Bytes;
     use alloy_provider::fillers::{
         BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller,
     };
@@ -1865,9 +874,17 @@ mod tests {
         DefaultFrame, GethDebugTracingOptions, GethDefaultTracingOptions,
     };
     use alloy_sol_types::sol;
-    use arbitrary::Unstructured;
-    use std::env::var;
+    use foundry_compilers::artifacts::ast::Ast;
+    use foundry_compilers::artifacts::sourcemap::parse;
+    use foundry_compilers::artifacts::BytecodeObject;
+    use foundry_compilers::artifacts::CompactBytecode;
+    use std::io::Write;
+    use std::process::Command;
+    use std::process::Stdio;
+    use std::str::FromStr;
     use thiserror::Error;
+
+    use crate::tracer::IcPcMap;
 
     type AnvilProvider = FillProvider<
         JoinFill<
@@ -1888,17 +905,17 @@ mod tests {
         }
     }
 
-    struct TestHarness {
+    pub struct TestHarness {
         provider: AnvilProvider,
     }
 
-    struct DeployResult {
+    pub struct DeployResult {
         frame: DefaultFrame,
         contract: CompilerOutput,
     }
 
     impl DeployResult {
-        fn retrieve_storage(&self) -> JsonValue {
+        pub fn retrieve_storage(&self) -> JsonValue {
             let state_variables = extract_state_variables(&self.contract.ast).unwrap();
 
             let storage_slots = self
@@ -1918,7 +935,7 @@ mod tests {
             result
         }
 
-        fn retrieve_memory(&self) -> JsonValue {
+        pub fn retrieve_memory(&self) -> JsonValue {
             let variables = extract_non_state_variables(
                 &self.contract.ast,
                 self.contract.compact_bytecode_deployed(),
@@ -2031,15 +1048,300 @@ mod tests {
         }
     }
 
+    /// Recursively visits all nodes of a specified type in the AST and calls the provided callback
+    pub fn visit_nodes<F>(node: &Node, target_type: NodeType, callback: &mut F)
+    where
+        F: FnMut(&Node),
+    {
+        // Check if current node matches target type
+        if node.node_type == target_type {
+            callback(node);
+        }
+
+        // Recursively visit all child nodes
+        for child in &node.nodes {
+            visit_nodes(child, target_type.clone(), callback);
+        }
+
+        // Some nodes may have additional children in other fields
+        // For example, body nodes in function definitions
+        if let Some(body) = &node.body {
+            visit_nodes(&body, target_type.clone(), callback);
+        }
+
+        // check declaratison for variable declaration statements
+        if let Some(declarations) = node.attribute::<Vec<Node>>("declarations") {
+            for declaration in declarations {
+                visit_nodes(&declaration, target_type.clone(), callback);
+            }
+        }
+
+        // Check the statements mark for body of a function
+        if let Some(statements) = node.attribute::<Vec<Node>>("statements") {
+            for statement in statements {
+                visit_nodes(&statement, target_type.clone(), callback);
+            }
+        }
+    }
+
+    /// Helper function that starts the traversal from the AST root
+    pub fn visit_ast_nodes<F>(ast: &Ast, target_type: NodeType, mut callback: F)
+    where
+        F: FnMut(&Node),
+    {
+        for node in &ast.nodes {
+            visit_nodes(node, target_type.clone(), &mut callback);
+        }
+    }
+
+    fn extract_state_variables(ast: &Ast) -> eyre::Result<Vec<(String, Type)>> {
+        let mut structs = HashMap::new();
+
+        // loop over the structs first
+        for node in ast.nodes.iter() {
+            for child in node.nodes.iter() {
+                if child.node_type == NodeType::StructDefinition {
+                    structs.insert(child.id.unwrap(), child.clone());
+                }
+                if child.node_type == NodeType::EnumDefinition {
+                    structs.insert(child.id.unwrap(), child.clone());
+                }
+            }
+        }
+
+        let mut variables = Vec::new();
+
+        // loop over the variables then
+        for node in ast.nodes.iter() {
+            for child in node.nodes.iter() {
+                if child.node_type == NodeType::VariableDeclaration {
+                    let typ = child.attribute::<Node>("typeName").unwrap();
+
+                    let ty = parse_variable_declaration_type(&typ, &structs)?;
+                    let name = child.attribute::<String>("name").unwrap();
+
+                    variables.push((name, ty));
+                }
+            }
+        }
+
+        Ok(variables)
+    }
+
+    #[derive(Clone, Debug)]
+    enum Location {
+        Storage,
+        Memory,
+        Stack,
+    }
+
+    #[derive(Clone, Debug)]
+    struct Variable {
+        name: String,
+        typ: Type,
+        location: Location,
+    }
+
+    fn extract_non_state_variables(
+        ast: &Ast,
+        bytecode: CompactBytecode,
+    ) -> HashMap<usize, Variable> {
+        let mut structs = HashMap::new();
+        let mut variables = HashMap::new();
+
+        let source_map = parse(&bytecode.clone().source_map.unwrap()).unwrap();
+        let pc_ic_map = IcPcMap::new(&bytecode.bytes().unwrap());
+
+        // Collect all struct definitions
+        visit_ast_nodes(ast, NodeType::StructDefinition, |node| {
+            structs.insert(node.id.unwrap(), node.clone());
+        });
+
+        // Collect all enum definitions
+        visit_ast_nodes(ast, NodeType::EnumDefinition, |node| {
+            structs.insert(node.id.unwrap(), node.clone());
+        });
+
+        // Collect state variables
+        visit_ast_nodes(ast, NodeType::VariableDeclaration, |node: &Node| {
+            // Check if it's a state variable (not a parameter or local var)
+            let start = node.src.start as u32;
+            let length = node.src.length.unwrap() as u32;
+
+            let matches = source_map
+                .iter()
+                .enumerate()
+                .filter(|(_, elem)| elem.offset() == start && elem.length() == length)
+                .collect::<Vec<_>>();
+
+            let typ = node.attribute::<Node>("typeName").unwrap();
+
+            let ty = parse_variable_declaration_type(&typ, &structs).unwrap();
+            let name = node.attribute::<String>("name").unwrap();
+
+            let location = match node
+                .attribute::<String>("storageLocation")
+                .unwrap()
+                .as_str()
+            {
+                "storage" => Location::Storage,
+                "memory" => Location::Memory,
+                "default" => Location::Stack,
+                _ => unreachable!(),
+            };
+
+            // there can only be one match
+            // For types::Array I had to use first, for string there was only one match
+            let m = matches.first().unwrap();
+            let pc = pc_ic_map.get(m.0).unwrap();
+
+            variables.insert(
+                pc,
+                Variable {
+                    name,
+                    typ: ty,
+                    location,
+                },
+            );
+        });
+
+        variables
+    }
+
+    #[derive(Clone, Debug)]
+    struct Assignment {
+        variable: Variable,
+        stack_index: usize,
+    }
+
+    fn resolve_memory_assignment(
+        typ: Type,
+        offset_bytes: usize,
+        memory: Bytes,
+    ) -> serde_json::Value {
+        match typ {
+            Type::String | Type::Bytes => {
+                // Read the length from the first 32 bytes at the offset
+                if offset_bytes + 32 > memory.len() {
+                    return serde_json::Value::Null;
+                }
+
+                let length_bytes = &memory[offset_bytes..offset_bytes + 32];
+                let length = U256::from_be_bytes::<32>(length_bytes.try_into().unwrap());
+                let length_usize = length.as_limbs()[0] as usize;
+
+                // Read the actual string data that follows the length
+                let data_offset = offset_bytes + 32;
+                if data_offset + length_usize > memory.len() {
+                    return serde_json::Value::Null;
+                }
+
+                let string_bytes = memory[data_offset..data_offset + length_usize].to_vec();
+                typ.decode_bytes(&string_bytes).unwrap()
+            }
+            Type::Array(TypeArray { ty, size }) => {
+                // For fixed-size arrays, use the offset directly
+                // For dynamic arrays, the offset points to the length
+                let (length, data_offset) = match size {
+                    Some(fixed_size) => (fixed_size as usize, offset_bytes), // Use offset directly
+                    None => {
+                        // For dynamic arrays, read length from first 32 bytes
+                        if offset_bytes + 32 > memory.len() {
+                            return serde_json::Value::Null;
+                        }
+                        let length_bytes = &memory[offset_bytes..offset_bytes + 32];
+                        let length = U256::from_be_bytes::<32>(length_bytes.try_into().unwrap());
+                        (length.as_limbs()[0] as usize, offset_bytes + 32)
+                    }
+                };
+
+                let mut values = Vec::new();
+                let mut current_offset = data_offset;
+
+                // Process each array element
+                for _i in 0..length {
+                    let val_offset = match *ty {
+                        Type::Address
+                        | Type::Bool
+                        | Type::Uint(_)
+                        | Type::Int(_)
+                        | Type::Enum(_)
+                        | Type::FixedBytes(_) => current_offset,
+                        _ => {
+                            // there is a dual reference here for internal elements
+                            let val = &memory[current_offset..current_offset + 32];
+                            let val = U256::from_be_bytes::<32>(val.try_into().unwrap());
+                            let val = val.as_limbs()[0] as usize;
+                            val
+                        }
+                    };
+
+                    let element_value =
+                        resolve_memory_assignment((*ty).clone(), val_offset, memory.clone());
+
+                    values.push(element_value);
+                    current_offset += 32;
+                }
+
+                serde_json::Value::Array(values)
+            }
+            Type::Tuple(tuple) => {
+                let mut map = serde_json::Map::new();
+                let mut current_offset = offset_bytes;
+
+                for (name, ty) in tuple.types {
+                    let val_offset = match ty {
+                        Type::Address
+                        | Type::Bool
+                        | Type::Uint(_)
+                        | Type::Int(_)
+                        | Type::Enum(_)
+                        | Type::FixedBytes(_) => current_offset,
+                        _ => {
+                            // there is a dual reference here for internal elements
+                            let val = &memory[current_offset..current_offset + 32];
+                            let val = U256::from_be_bytes::<32>(val.try_into().unwrap());
+                            let val = val.as_limbs()[0] as usize;
+                            val
+                        }
+                    };
+
+                    let value = resolve_memory_assignment(ty.clone(), val_offset, memory.clone());
+                    map.insert(name, value);
+
+                    // For all types except Mapping, advance the offset by 32 bytes
+                    match ty {
+                        Type::Mapping(_) => {}
+                        _ => current_offset += 32,
+                    }
+                }
+
+                serde_json::Value::Object(map)
+            }
+            _ => {
+                // match basic elements
+                // get the slot for 32 bytes and size items from the right
+                let value_bytes = &memory[offset_bytes..offset_bytes + 32];
+                let typ_size = typ.get_bytes();
+
+                // fixed bytes pads to the left and the other elements pads to the right
+                let value_bytes = match typ {
+                    Type::FixedBytes(_) => value_bytes[0..typ_size as usize].to_vec(),
+                    _ => value_bytes[32 - typ_size as usize..].to_vec(),
+                };
+
+                typ.decode_bytes(&value_bytes).unwrap()
+            }
+        }
+    }
+
     #[derive(Error, Debug)]
-    enum DeployError {
+    pub enum DeployError {
         #[error("Recoverable error: {0}")]
         RecoverableError(String),
         #[error("Fatal error: {0}")]
         FatalError(String),
     }
-
-    const DEFAULT_NUM_FUZZ_TESTS: usize = 100;
 
     impl TestHarness {
         const RECOVERABLE_ERRORS: &'static [&'static str] = &[
@@ -2048,7 +1350,7 @@ mod tests {
             "array out-of-bounds",
         ];
 
-        fn new() -> eyre::Result<Self> {
+        pub fn new() -> eyre::Result<Self> {
             let provider = ProviderBuilder::new()
                 .connect_anvil_with_wallet_and_config(|anvil| anvil.arg("--steps-tracing"))?;
 
@@ -2059,7 +1361,7 @@ mod tests {
             Self::RECOVERABLE_ERRORS.iter().any(|&e| err.contains(e))
         }
 
-        async fn deploy(&self, source: &str) -> Result<DeployResult, DeployError> {
+        pub async fn deploy(&self, source: &str) -> Result<DeployResult, DeployError> {
             let provider = self.provider.clone();
             let contract_artifact = compile_contract(&source).unwrap();
 
@@ -2134,39 +1436,737 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_storage_fuzz() -> eyre::Result<()> {
-        let harness = TestHarness::new()?;
+    #[derive(Debug, Deserialize)]
+    pub struct CompilerOutput {
+        /// The creation bytecode
+        #[serde(rename = "bin")]
+        pub bin: Bytes,
 
-        let num = var("NUM_TESTS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_NUM_FUZZ_TESTS);
+        #[serde(rename = "srcmap")]
+        pub srcmap: String,
 
-        for i in 0..num {
-            println!("generting {} {}", i, num);
+        /// The runtime bytecode
+        #[serde(rename = "bin-runtime")]
+        pub bin_runtime: Bytes,
 
-            let mut data = vec![0u8; 1000];
-            getrandom::getrandom(&mut data).unwrap();
+        #[serde(rename = "srcmap-runtime")]
+        pub srcmap_runtime: String,
 
-            let mut u = Unstructured::new(&data);
-            let typ = TypeTuple::arbitrary(&mut u).unwrap();
+        pub ast: Ast,
+    }
 
-            let artifact = ContractGenerator::build_storage(Type::Tuple(typ), &mut u);
-            let result = match harness.deploy(&artifact.source).await {
-                Ok(result) => result,
-                Err(DeployError::RecoverableError(_)) => continue,
-                Err(DeployError::FatalError(err)) => {
-                    std::panic!("bad {:?}", err);
-                }
-            };
-
-            let result = result.retrieve_storage();
-            assert_eq!(result, artifact.values);
+    impl CompilerOutput {
+        pub fn compact_bytecode(&self) -> CompactBytecode {
+            CompactBytecode {
+                object: BytecodeObject::Bytecode(self.bin.clone()),
+                source_map: Some(self.srcmap.clone()),
+                link_references: Default::default(),
+            }
         }
 
-        Ok(())
+        pub fn compact_bytecode_deployed(&self) -> CompactBytecode {
+            CompactBytecode {
+                object: BytecodeObject::Bytecode(self.bin_runtime.clone()),
+                source_map: Some(self.srcmap_runtime.clone()),
+                link_references: Default::default(),
+            }
+        }
+
+        fn bytecode(&self) -> Bytes {
+            self.bin.clone()
+        }
     }
+
+    #[derive(Debug, Deserialize)]
+    pub struct ContractOutput {
+        /// The creation bytecode
+        pub bin: Bytes,
+        /// The runtime bytecode
+        #[serde(rename = "bin-runtime")]
+        pub bin_runtime: Bytes,
+
+        #[serde(rename = "srcmap")]
+        pub srcmap: String,
+
+        #[serde(rename = "srcmap-runtime")]
+        pub srcmap_runtime: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct SourceOutput {
+        #[serde(rename = "AST")]
+        pub ast: Ast,
+    }
+
+    pub fn compile_contract(source: &str) -> eyre::Result<CompilerOutput> {
+        let mut cmd = Command::new("solc")
+            .args([
+                "--combined-json",
+                "ast,bin,bin-runtime,srcmap,srcmap-runtime", // Get AST and both creation/runtime bytecode
+                "--pretty-json",                             // Make the output readable
+                "-",                                         // Read from stdin
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        // Write the source to stdin
+        if let Some(mut stdin) = cmd.stdin.take() {
+            stdin.write_all(source.as_bytes())?;
+        }
+
+        let output = cmd.wait_with_output()?;
+
+        if output.status.success() {
+            let json_output = String::from_utf8(output.stdout)
+                .map_err(|e| eyre::eyre!("Failed to parse solc output as UTF-8: {}", e))?;
+
+            {
+                // Create a unique test directory
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs();
+
+                let test_dir = format!("debug/test-{}", timestamp);
+                std::fs::create_dir_all(&test_dir)?;
+
+                // Write the Solidity source
+                std::fs::write(format!("{}/contract.sol", test_dir), source)?;
+
+                // Write the compiler output
+                std::fs::write(format!("{}/solc_output.json", test_dir), &json_output)?;
+            }
+
+            #[derive(Debug, Deserialize)]
+            struct FullCompilerOutput {
+                contracts: HashMap<String, ContractOutput>,
+                sources: HashMap<String, SourceOutput>,
+            }
+
+            let parsed: FullCompilerOutput = serde_json::from_str(&json_output)
+                .map_err(|e| eyre::eyre!("Failed to parse compiler output: {}", e))?;
+
+            // there should be a single contract compiled
+            let contract = parsed.contracts.values().next().unwrap();
+            let source = parsed.sources.values().next().unwrap();
+
+            let output = CompilerOutput {
+                bin: contract.bin.clone(),
+                bin_runtime: contract.bin_runtime.clone(),
+                srcmap_runtime: contract.srcmap_runtime.clone(),
+                srcmap: contract.srcmap.clone(),
+                ast: source.ast.clone(),
+            };
+            Ok(output)
+        } else {
+            let error = String::from_utf8_lossy(&output.stderr);
+            Err(eyre::eyre!("Solidity compilation failed: {}", error))
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct SolidityValue {
+        setup_code: String,
+        value: JsonValue,
+    }
+
+    pub struct ContractGenerator<'a> {
+        typ: Type,
+        structs: Vec<String>,
+        u: &'a mut Unstructured<'a>,
+    }
+
+    impl<'a> ContractGenerator<'a> {
+        pub fn new(typ: Type, u: &'a mut Unstructured<'a>) -> Self {
+            Self {
+                typ,
+                structs: Vec::new(),
+                u,
+            }
+        }
+
+        pub fn build_memory(typ: Type, u: &'a mut Unstructured<'a>) -> GeneratedContract {
+            let mut generator = ContractGenerator::new(typ, u);
+            generator.build_memory_inner()
+        }
+
+        pub fn build_storage(typ: Type, u: &'a mut Unstructured<'a>) -> GeneratedContract {
+            let mut generator = ContractGenerator::new(typ, u);
+            generator.build_storage_inner()
+        }
+
+        pub fn build_stack(typ: Type, u: &'a mut Unstructured<'a>) -> GeneratedContract {
+            let mut generator = ContractGenerator::new(typ, u);
+            generator.build_stack_inner()
+        }
+
+        pub fn build_storage_inner(&mut self) -> GeneratedContract {
+            let tuple = match self.typ.clone() {
+                Type::Tuple(tuple) => tuple,
+                _ => std::panic!("Type is not a tuple"),
+            };
+
+            // First collect all struct definitions by running encode_argument
+            let mut state_vars = Vec::new();
+            for (inx, (_, ty)) in tuple.types.iter().enumerate() {
+                let name = format!("arg_{}", inx);
+                let type_str = self.encode_argument(&name, ty.clone());
+                state_vars.push((name, type_str));
+            }
+
+            // Then format the full contract
+            let struct_defs = self.structs.join("\n\n    ");
+            let vars = state_vars
+                .iter()
+                .map(|(k, v)| format!("    {} {};", v, k))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            // Generate setup code and collect values
+            let mut setup_code = String::new();
+            let mut values = serde_json::Map::new();
+
+            for (inx, (_, ty)) in tuple.types.iter().enumerate() {
+                let name = format!("arg_{}", inx);
+                let (setup, value) = self.generate_setup_code_2_with_value(&name, ty.clone());
+                setup_code.push_str(&setup);
+                setup_code.push('\n');
+                values.insert(name, value);
+            }
+
+            let setup_code = setup_code.trim_end();
+
+            let contract = format!(
+                "// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+contract ComplexTypes {{
+    {}
+    {}
+
+    function start() public {{
+        {}
+    }}
+}}
+",
+                struct_defs, vars, setup_code,
+            );
+
+            GeneratedContract {
+                source: contract,
+                values: JsonValue::Object(values),
+            }
+        }
+
+        pub fn encode_argument(&mut self, field_name: &str, ty: Type) -> String {
+            match ty {
+                Type::Tuple(tuple) => {
+                    // Check if we've already generated this exact struct
+                    let mut fields = String::new();
+                    for (inx, (_, ty)) in tuple.types.iter().enumerate() {
+                        fields.push_str(&format!(
+                            "{} {};\n",
+                            self.encode_argument(&format!("field_{}", inx), ty.clone()),
+                            format!("field_{}", inx)
+                        ));
+                    }
+
+                    // Generate a new struct name
+                    let struct_name = format!("Struct{}", self.structs.len() + 1);
+
+                    // Add the struct definition
+                    self.structs
+                        .push(format!("struct {} {{\n{}    }}", struct_name, fields));
+                    struct_name
+                }
+                Type::Array(arr) => {
+                    let base = self.encode_argument(field_name, *arr.ty);
+                    match arr.size {
+                        Some(size) => format!("{}[{}]", base, size),
+                        None => format!("{}[]", base),
+                    }
+                }
+                Type::Mapping(mapping) => {
+                    let key = self.encode_argument(field_name, *mapping.key);
+                    let value = self.encode_argument(field_name, *mapping.value);
+                    format!("mapping({} => {})", key, value)
+                }
+                Type::Address => "address".to_string(),
+                Type::Bool => "bool".to_string(),
+                Type::String => "string".to_string(),
+                Type::Bytes => "bytes".to_string(),
+                Type::FixedBytes(size) => format!("bytes{}", size),
+                Type::Int(size) => match size {
+                    Some(s) => format!("int{}", s),
+                    None => "int256".to_string(),
+                },
+                Type::Uint(size) => match size {
+                    Some(s) => format!("uint{}", s),
+                    None => "uint256".to_string(),
+                },
+                Type::Enum(enum_type) => {
+                    // Add the enum definition
+                    self.structs.push(format!(
+                        "enum {} {{ {} }}",
+                        enum_type.name,
+                        enum_type.identifiers.join(", ")
+                    ));
+
+                    enum_type.name
+                }
+            }
+        }
+
+        fn generate_value(&mut self, field_name: &str, ty: &Type) -> SolidityValue {
+            match ty {
+                Type::Address
+                | Type::Bool
+                | Type::String
+                | Type::Bytes
+                | Type::FixedBytes(_)
+                | Type::Int(_)
+                | Type::Uint(_) => {
+                    // Simple types just need a single value assignment
+                    let value = self.generate_random_value(ty);
+                    SolidityValue {
+                        setup_code: format!(
+                            "{} = {};",
+                            field_name,
+                            self.value_to_literal(&value, ty)
+                        ),
+                        value,
+                    }
+                }
+                Type::Array(arr) => self.generate_array_value(field_name, arr),
+                Type::Tuple(tuple) => self.generate_struct_value(field_name, tuple),
+                Type::Mapping(mapping) => self.generate_mapping_value(field_name, mapping),
+                Type::Enum(enum_type) => {
+                    let value = self.generate_random_value(&ty);
+
+                    SolidityValue {
+                        setup_code: format!(
+                            "{} = {}.{};",
+                            field_name,
+                            enum_type.name,
+                            self.value_to_literal(&value, ty)
+                        ),
+                        value: value,
+                    }
+                }
+            }
+        }
+
+        fn generate_array_value(&mut self, field_name: &str, arr: &TypeArray) -> SolidityValue {
+            let mut setup = String::new();
+            let mut values = Vec::new();
+
+            match arr.size {
+                Some(size) => {
+                    // Fixed size array
+                    for i in 0..size {
+                        let element =
+                            self.generate_value(&format!("{}[{}]", field_name, i), &arr.ty);
+                        setup.push_str(&element.setup_code);
+                        setup.push('\n');
+                        values.push(element.value);
+                    }
+                }
+                None => {
+                    // Dynamic array
+                    for _ in 0..2 {
+                        setup.push_str(&format!("{}.push();\n", field_name));
+                        let element = self.generate_value(
+                            &format!("{}[{}.length - 1]", field_name, field_name),
+                            &arr.ty,
+                        );
+                        setup.push_str(&element.setup_code);
+                        setup.push('\n');
+                        values.push(element.value);
+                    }
+                }
+            }
+
+            SolidityValue {
+                setup_code: setup.trim_end().to_string(),
+                value: JsonValue::Array(values),
+            }
+        }
+
+        fn generate_struct_value(&mut self, field_name: &str, tuple: &TypeTuple) -> SolidityValue {
+            let mut setup = String::new();
+            let mut values = serde_json::Map::new();
+
+            for (idx, (_, field_ty)) in tuple.types.iter().enumerate() {
+                let field = self.generate_value(&format!("{}.field_{}", field_name, idx), field_ty);
+                setup.push_str(&field.setup_code);
+                setup.push('\n');
+                values.insert(format!("field_{}", idx), field.value);
+            }
+
+            SolidityValue {
+                setup_code: setup.trim_end().to_string(),
+                value: JsonValue::Object(values),
+            }
+        }
+
+        fn generate_mapping_value(
+            &mut self,
+            field_name: &str,
+            mapping: &TypeMapping,
+        ) -> SolidityValue {
+            let mut setup = String::new();
+            let mut values = serde_json::Map::new();
+
+            for _ in 0..2 {
+                let key = self.generate_random_value(&mapping.key);
+                let key_literal = self.value_to_literal(&key, &mapping.key);
+
+                let value = self
+                    .generate_value(&format!("{}[{}]", field_name, key_literal), &mapping.value);
+                setup.push_str(&value.setup_code);
+                setup.push('\n');
+                values.insert(key.to_string(), value.value);
+            }
+
+            SolidityValue {
+                setup_code: setup.trim_end().to_string(),
+                value: JsonValue::Object(values),
+            }
+        }
+
+        pub fn generate_setup_code_2_with_value(
+            &mut self,
+            field_name: &str,
+            ty: Type,
+        ) -> (String, JsonValue) {
+            let result = self.generate_value(field_name, &ty);
+            (result.setup_code, result.value)
+        }
+
+        fn generate_random_value(&mut self, ty: &Type) -> JsonValue {
+            match ty {
+                Type::Bool => {
+                    let value = self.u.arbitrary::<bool>().unwrap_or(false);
+                    JsonValue::Bool(value)
+                }
+                Type::String => {
+                    // Generate a random string between 0 and 60 chars
+                    let length = self.u.int_in_range(0..=60).unwrap_or(10);
+                    let chars: String = (0..length)
+                        .map(|_| {
+                            // Use basic ASCII for readability
+                            let idx = self.u.int_in_range(b'a'..=b'z').unwrap_or(b'x');
+                            idx as char
+                        })
+                        .collect();
+                    JsonValue::String(chars)
+                }
+                Type::Bytes | Type::FixedBytes(_) | Type::Address => {
+                    let length = match ty {
+                        Type::Bytes => self.u.int_in_range(0..=60).unwrap_or(10),
+                        Type::FixedBytes(size) => *size as usize,
+                        Type::Address => 20,
+                        _ => std::panic!("Invalid type"),
+                    };
+
+                    let bytes: String = (0..length)
+                        .map(|_| {
+                            let byte = self.u.int_in_range(0..=255).unwrap_or(0);
+                            format!("{:02x}", byte)
+                        })
+                        .collect();
+
+                    if *ty == Type::Address {
+                        let addr = alloy_primitives::Address::from_str(bytes.as_str()).unwrap();
+                        JsonValue::String(addr.to_string())
+                    } else {
+                        JsonValue::String(format!("0x{}", bytes))
+                    }
+                }
+                Type::Int(size) => {
+                    let bytes = match size {
+                        Some(s) => (s / 8) as u32,
+                        None => 32,
+                    };
+                    // Just generate a small number that fits in the bytes
+                    let num = if bytes <= 4 {
+                        self.u.int_in_range(-10i32..=10i32).unwrap_or(0)
+                    } else {
+                        self.u.int_in_range(-1000i32..=1000i32).unwrap_or(0)
+                    };
+                    JsonValue::String(num.to_string())
+                }
+                Type::Uint(size) => {
+                    let bytes = match size {
+                        Some(s) => (s / 8) as u32,
+                        None => 32,
+                    };
+                    // Just generate a small positive number that fits in the bytes
+                    let num = if bytes <= 4 {
+                        self.u.int_in_range(0u32..=10u32).unwrap_or(0)
+                    } else {
+                        self.u.int_in_range(0u32..=1000u32).unwrap_or(0)
+                    };
+                    JsonValue::String(num.to_string())
+                }
+                Type::Enum(enum_typ) => {
+                    let num = self
+                        .u
+                        .int_in_range(0..=enum_typ.identifiers.len() - 1)
+                        .unwrap_or(0);
+                    JsonValue::String(enum_typ.identifiers[num].clone())
+                }
+                _ => JsonValue::Null,
+            }
+        }
+
+        fn value_to_literal(&self, value: &JsonValue, ty: &Type) -> String {
+            match value {
+                JsonValue::String(s) if s.starts_with("0x") => {
+                    match ty {
+                        Type::Address => s.clone(), // Keep addresses as 0x...
+                        Type::FixedBytes(_) => format!("hex\"{}\"", &s[2..]), // Convert fixed bytes to hex"..."
+                        Type::Bytes => format!("hex\"{}\"", &s[2..]), // Convert dynamic bytes to hex"..."
+                        _ => format!("hex\"{}\"", &s[2..]),
+                    }
+                }
+                JsonValue::String(s) => match ty {
+                    Type::Int(_) | Type::Uint(_) | Type::Enum(_) => s.clone(),
+                    _ => format!("\"{}\"", s),
+                },
+                JsonValue::Number(n) => n.to_string(),
+                JsonValue::Bool(b) => b.to_string(),
+                _ => "0".to_string(),
+            }
+        }
+
+        pub fn build_memory_inner(&mut self) -> GeneratedContract {
+            let tuple = match self.typ.clone() {
+                Type::Tuple(tuple) => tuple,
+                _ => std::panic!("Type is not a tuple"),
+            };
+
+            // First collect all struct definitions and build type mapping
+            let mut state_vars = Vec::new();
+            let mut type_mapping = HashMap::new();
+
+            for (inx, (_, ty)) in tuple.types.iter().enumerate() {
+                let name = format!("arg_{}", inx);
+                let type_str = self.encode_argument(&name, ty.clone());
+                type_mapping.insert(inx, type_str.clone());
+                state_vars.push((name, type_str));
+            }
+
+            // Format the full contract
+            let struct_defs = self.structs.join("\n\n    ");
+
+            // Generate setup code and collect values
+            let mut setup_code = String::new();
+            let mut values = serde_json::Map::new();
+
+            // First declare all variables
+            for (inx, (name, type_str)) in state_vars.iter().enumerate() {
+                let declaration = match &tuple.types[inx].1 {
+                    Type::Array(arr) => {
+                        if arr.size.is_none() {
+                            // For dynamic arrays, use the stored type mapping
+                            let array_type =
+                                match type_mapping.get(&inx).unwrap().strip_suffix("[]") {
+                                    Some(base_type) => base_type,
+                                    None => type_mapping.get(&inx).unwrap(), // Fallback
+                                };
+                            format!(
+                                "    {} memory {} = new {}[]({});\n",
+                                type_str, name, array_type, 2
+                            )
+                        } else {
+                            format!("    {} memory {};\n", type_str, name)
+                        }
+                    }
+                    _ => format!("    {} memory {};\n", type_str, name),
+                };
+                setup_code.push_str(&declaration);
+            }
+
+            // Then generate the assignments
+            for (inx, (_, ty)) in tuple.types.iter().enumerate() {
+                let name = format!("arg_{}", inx);
+                let (setup, value) = self.generate_setup_code_memory(&name, ty.clone());
+                setup_code.push_str(&setup);
+                setup_code.push('\n');
+                values.insert(name, value);
+            }
+
+            let setup_code = setup_code.trim_end();
+
+            let contract = format!(
+                "// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+contract ComplexTypes {{
+    {}
+
+    function start() public {{
+{}
+    }}
+}}
+",
+                struct_defs, setup_code,
+            );
+
+            GeneratedContract {
+                source: contract,
+                values: JsonValue::Object(values),
+            }
+        }
+
+        fn generate_setup_code_memory(
+            &mut self,
+            field_name: &str,
+            ty: Type,
+        ) -> (String, JsonValue) {
+            match ty {
+                Type::Array(arr) => {
+                    let mut setup = String::new();
+                    let mut values = Vec::new();
+
+                    match arr.size {
+                        Some(size) => {
+                            // Fixed size array
+                            for i in 0..size {
+                                let (element_setup, element_value) = self
+                                    .generate_setup_code_memory(
+                                        &format!("{}[{}]", field_name, i),
+                                        *arr.ty.clone(),
+                                    );
+                                setup.push_str(&element_setup);
+                                setup.push('\n');
+                                values.push(element_value);
+                            }
+                        }
+                        None => {
+                            // Dynamic array - already initialized with new
+                            for i in 0..2 {
+                                let (element_setup, element_value) = self
+                                    .generate_setup_code_memory(
+                                        &format!("{}[{}]", field_name, i),
+                                        *arr.ty.clone(),
+                                    );
+                                setup.push_str(&element_setup);
+                                setup.push('\n');
+                                values.push(element_value);
+                            }
+                        }
+                    }
+
+                    (setup.trim_end().to_string(), JsonValue::Array(values))
+                }
+                Type::Tuple(tuple) => {
+                    let mut setup = String::new();
+                    let mut values = serde_json::Map::new();
+
+                    for (idx, (_, field_ty)) in tuple.types.iter().enumerate() {
+                        let (field_setup, field_value) = self.generate_setup_code_memory(
+                            &format!("{}.field_{}", field_name, idx),
+                            field_ty.clone(),
+                        );
+                        setup.push_str(&field_setup);
+                        setup.push('\n');
+                        values.insert(format!("field_{}", idx), field_value);
+                    }
+
+                    (setup.trim_end().to_string(), JsonValue::Object(values))
+                }
+                Type::Enum(ref enum_type) => {
+                    let value = self.generate_random_value(&ty);
+                    (
+                        format!(
+                            "{} = {}.{};",
+                            field_name,
+                            enum_type.name,
+                            self.value_to_literal(&value, &ty)
+                        ),
+                        value,
+                    )
+                }
+                _ => {
+                    let value = self.generate_random_value(&ty);
+                    (
+                        format!("{} = {};", field_name, self.value_to_literal(&value, &ty)),
+                        value,
+                    )
+                }
+            }
+        }
+
+        pub fn build_stack_inner(&mut self) -> GeneratedContract {
+            let tuple = match self.typ.clone() {
+                Type::Tuple(tuple) => tuple,
+                _ => std::panic!("Type is not a tuple"),
+            };
+
+            // For stack variables, we need declarations and assignments
+            let mut declarations = String::new();
+            let mut assignments = String::new();
+            let mut values = serde_json::Map::new();
+
+            for (inx, (_, ty)) in tuple.types.iter().enumerate() {
+                // Only allow simple types for stack
+                match ty {
+                    Type::Address
+                    | Type::Bool
+                    | Type::Uint(_)
+                    | Type::Int(_)
+                    | Type::FixedBytes(_) => {
+                        let name = format!("arg_{}", inx);
+                        let type_str = self.encode_argument(&name, ty.clone());
+
+                        // Declare the variable
+                        declarations.push_str(&format!("        {} {};\n", type_str, name));
+
+                        // Generate and assign the value
+                        let value = self.generate_random_value(ty);
+                        assignments.push_str(&format!(
+                            "        {} = {};\n",
+                            name,
+                            self.value_to_literal(&value, ty)
+                        ));
+                        values.insert(name, value);
+                    }
+                    _ => continue, // Skip complex types
+                }
+            }
+
+            let contract = format!(
+                "// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+contract ComplexTypes {{
+    function start() public {{
+        // Stack variables declarations
+{}
+        // Stack variables assignments
+{}
+    }}
+}}",
+                declarations.trim_end(),
+                assignments.trim_end()
+            );
+
+            GeneratedContract {
+                source: contract,
+                values: JsonValue::Object(values),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::{ContractGenerator, TestHarness};
+    use super::*;
+    use arbitrary::Unstructured;
 
     #[tokio::test]
     async fn test_storage_types() -> eyre::Result<()> {
@@ -2311,15 +2311,35 @@ mod tests {
 
         Ok(())
     }
+}
 
+#[cfg(test)]
+mod fuzz {
+    use super::testing::{ContractGenerator, DeployError, TestHarness};
+    use super::*;
+
+    const DEFAULT_NUM_FUZZ_TESTS: usize = 100;
+
+    macro_rules! get_num_tests {
+        () => {
+            match std::env::var("FUZZ") {
+                Ok(_) => std::env::var("NUM_TESTS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(DEFAULT_NUM_FUZZ_TESTS),
+                Err(_) => {
+                    println!("Skipping fuzz test - set FUZZ=1 to run");
+                    return Ok(());
+                }
+            }
+        };
+    }
+
+    // Fuzz tests
     #[tokio::test]
-    async fn test_memory_fuzz() -> eyre::Result<()> {
+    async fn test_storage_fuzz() -> eyre::Result<()> {
         let harness = TestHarness::new()?;
-
-        let num = var("NUM_TESTS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_NUM_FUZZ_TESTS);
+        let num = get_num_tests!();
 
         for i in 0..num {
             println!("generting {} {}", i, num);
@@ -2328,11 +2348,9 @@ mod tests {
             getrandom::getrandom(&mut data).unwrap();
 
             let mut u = Unstructured::new(&data);
-            let typ = MemoryType::arbitrary_type(&mut u).unwrap();
+            let typ = TypeTuple::arbitrary(&mut u).unwrap();
 
-            let mut u = Unstructured::new(&data);
-            let artifact = ContractGenerator::build_memory(typ.clone(), &mut u);
-
+            let artifact = ContractGenerator::build_storage(Type::Tuple(typ), &mut u);
             let result = match harness.deploy(&artifact.source).await {
                 Ok(result) => result,
                 Err(DeployError::RecoverableError(_)) => continue,
@@ -2341,7 +2359,7 @@ mod tests {
                 }
             };
 
-            let result = result.retrieve_memory();
+            let result = result.retrieve_storage();
             assert_eq!(result, artifact.values);
         }
 
@@ -2351,11 +2369,7 @@ mod tests {
     #[tokio::test]
     async fn test_stack_fuzz() -> eyre::Result<()> {
         let harness = TestHarness::new()?;
-
-        let num = var("NUM_TESTS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_NUM_FUZZ_TESTS);
+        let num = get_num_tests!();
 
         for i in 0..num {
             println!("generating {} {}", i, num);
@@ -2382,6 +2396,38 @@ mod tests {
             println!("{:?}", artifact.values);
 
             // assert_eq!(result, artifact.values);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_memory_fuzz() -> eyre::Result<()> {
+        let harness = TestHarness::new()?;
+        let num = get_num_tests!();
+
+        for i in 0..num {
+            println!("generting {} {}", i, num);
+
+            let mut data = vec![0u8; 1000];
+            getrandom::getrandom(&mut data).unwrap();
+
+            let mut u = Unstructured::new(&data);
+            let typ = MemoryType::arbitrary_type(&mut u).unwrap();
+
+            let mut u = Unstructured::new(&data);
+            let artifact = ContractGenerator::build_memory(typ.clone(), &mut u);
+
+            let result = match harness.deploy(&artifact.source).await {
+                Ok(result) => result,
+                Err(DeployError::RecoverableError(_)) => continue,
+                Err(DeployError::FatalError(err)) => {
+                    std::panic!("bad {:?}", err);
+                }
+            };
+
+            let result = result.retrieve_memory();
+            assert_eq!(result, artifact.values);
         }
 
         Ok(())

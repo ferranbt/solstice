@@ -1746,7 +1746,7 @@ const SKIP_TRACE_LIST: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::compile_contract;
+    use crate::state::testing::compile_contract;
     use std::fmt::{Display, Write};
     use std::path::PathBuf;
 
