@@ -152,6 +152,9 @@ fn generate_debug_units(
 
                             if node.node_type == NodeType::StructDefinition {
                                 trace_context.structs.insert(node_id, node.clone());
+                            } else if node.node_type == NodeType::EnumDefinition {
+                                let node_id = node.id.unwrap();
+                                trace_context.structs.insert(node_id, node.clone());
                             } else if node.node_type == NodeType::VariableDeclaration {
                                 // not sure if I have to filter by stateVariable here
                                 let variable = StatementVisitor::build_debug_variable(node)
@@ -168,6 +171,9 @@ fn generate_debug_units(
                             .insert(contract_node.id.unwrap(), contract_state_variables);
                     } else if node.node_type == NodeType::StructDefinition {
                         // struct defined outside of a contract
+                        let node_id = node.id.unwrap();
+                        trace_context.structs.insert(node_id, node.clone());
+                    } else if node.node_type == NodeType::EnumDefinition {
                         let node_id = node.id.unwrap();
                         trace_context.structs.insert(node_id, node.clone());
                     }
@@ -234,10 +240,6 @@ fn generate_debug_units(
 
                                     debug_unit.insert(contract_name, dd);
                                 }
-                            }
-                            NodeType::EnumDefinition => {
-                                let node_id = node.id.unwrap();
-                                trace_context.structs.insert(node_id, node.clone());
                             }
                             NodeType::UserDefinedValueTypeDefinition => {
                                 let node_id = node.id.unwrap();

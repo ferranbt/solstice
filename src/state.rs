@@ -105,6 +105,15 @@ impl Type {
                 "0x{}",
                 hex::encode(bytes)
             ))),
+            Type::Enum(enum_type) => {
+                let num = u8::from_be_bytes(bytes.try_into().unwrap()) as usize;
+
+                enum_type
+                    .identifiers
+                    .get(num)
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .ok_or_else(|| "Invalid enum index".to_string())
+            }
             _ => Err("Unsupported type".to_string()),
         }
     }
@@ -124,18 +133,7 @@ impl Type {
                 Some(s) => (*s as u32) / 8,
                 None => 32, // default uint256
             },
-            Type::Enum(enum_type) => {
-                let num_variants = enum_type.identifiers.len();
-                if num_variants <= 256 {
-                    1 // uint8
-                } else if num_variants <= 65536 {
-                    2 // uint16
-                } else if num_variants <= 16777216 {
-                    3 // uint24
-                } else {
-                    4 // uint32
-                }
-            }
+            Type::Enum(_) => 1,
             Type::Array(_) => 32,
             Type::Tuple(_) => 32,
             Type::Mapping(_) => 32,
@@ -198,8 +196,8 @@ impl<'a> Arbitrary<'a> for Type {
             6, // Uint
             7, // Array
             8, // Tuple
-               //9, // Mapping
-               // 10, // Enum TODO
+            9, // Enum
+               // 10, // Mapping
         ])? {
             0 => Ok(Type::Address),
             1 => Ok(Type::Bool),
@@ -224,7 +222,7 @@ impl<'a> Arbitrary<'a> for Type {
             }
             7 => Ok(Type::Array(TypeArray::arbitrary(u)?)),
             8 => Ok(Type::Tuple(TypeTuple::arbitrary(u)?)),
-            //9 => Ok(Type::Mapping(TypeMapping::arbitrary(u)?)),
+            9 => Ok(Type::Enum(TypeEnum::arbitrary(u)?)),
             _ => unreachable!(),
         }
     }
@@ -370,8 +368,15 @@ contract ComplexTypes {{
                 Some(s) => format!("uint{}", s),
                 None => "uint256".to_string(),
             },
-            Type::Enum(_) => {
-                todo!("Implement enum encoding")
+            Type::Enum(enum_type) => {
+                // Add the enum definition
+                self.structs.push(format!(
+                    "enum {} {{ {} }}",
+                    enum_type.name,
+                    enum_type.identifiers.join(", ")
+                ));
+
+                enum_type.name
             }
         }
     }
@@ -395,7 +400,18 @@ contract ComplexTypes {{
             Type::Array(arr) => self.generate_array_value(field_name, arr),
             Type::Tuple(tuple) => self.generate_struct_value(field_name, tuple),
             Type::Mapping(mapping) => self.generate_mapping_value(field_name, mapping),
-            Type::Enum(_) => todo!(),
+            Type::Enum(enum_type) => {
+                let num = self
+                    .u
+                    .int_in_range(1..=enum_type.identifiers.len())
+                    .unwrap();
+                let val = enum_type.identifiers[num - 1].clone();
+
+                SolidityValue {
+                    setup_code: format!("{} = {}.{};", field_name, enum_type.name, val),
+                    value: JsonValue::String(val),
+                }
+            }
         }
     }
 
@@ -770,6 +786,7 @@ contract ComplexTypes {{
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 struct TypeEnum {
+    name: String,
     identifiers: Vec<String>,
 }
 
@@ -785,7 +802,10 @@ impl<'a> Arbitrary<'a> for TypeEnum {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(TypeEnum { identifiers })
+        let num_enum = u.int_in_range(1..=100)?;
+        let name = format!("Enum{}", num_enum);
+
+        Ok(TypeEnum { name, identifiers })
     }
 }
 
@@ -980,7 +1000,12 @@ impl StateReference {
 
     pub fn resolve_type(&self, ty: Type, offset: StoragePosition) -> JsonValue {
         match ty {
-            Type::Address | Type::Bool | Type::FixedBytes(_) | Type::Uint(_) | Type::Int(_) => {
+            Type::Address
+            | Type::Bool
+            | Type::FixedBytes(_)
+            | Type::Uint(_)
+            | Type::Int(_)
+            | Type::Enum(_) => {
                 let num_bytes = ty.get_bytes();
 
                 let slot_bytes = if let Some(slot_bytes) = self.storage.get(&offset.slot) {
@@ -1138,9 +1163,6 @@ impl StateReference {
             }
             Type::Mapping(_) => {
                 JsonValue::Null // or handle mapping values if needed
-            }
-            Type::Enum(_) => {
-                JsonValue::Null // TODO
             }
         }
     }
@@ -1302,13 +1324,24 @@ pub fn parse_variable_declaration_type(
                 size: length,
             }))
         }
-        NodeType::EnumDefinition => Ok(Type::Enum(TypeEnum {
-            identifiers: vec![], // TODO:
-        })),
+        NodeType::EnumDefinition => {
+            let name = typ.attribute::<String>("name").unwrap();
+            let members = typ.attribute::<Vec<EnumMember>>("members").unwrap();
+            let identifiers = members.iter().map(|m| m.name.clone()).collect();
+
+            Ok(Type::Enum(TypeEnum { name, identifiers }))
+        }
         _ => {
             unreachable!("unknown type name: {:?}", typ.node_type);
         }
     }
+}
+
+// We have to use this one instead of 'Node' type because
+// the enum members do not have all the required elements in 'Node' to deserialize
+#[derive(Clone, Debug, Deserialize)]
+struct EnumMember {
+    name: String,
 }
 
 fn extract_state_variables(ast: &Ast) -> eyre::Result<Vec<(String, Type)>> {
@@ -1318,6 +1351,9 @@ fn extract_state_variables(ast: &Ast) -> eyre::Result<Vec<(String, Type)>> {
     for node in ast.nodes.iter() {
         for child in node.nodes.iter() {
             if child.node_type == NodeType::StructDefinition {
+                structs.insert(child.id.unwrap(), child.clone());
+            }
+            if child.node_type == NodeType::EnumDefinition {
                 structs.insert(child.id.unwrap(), child.clone());
             }
         }
@@ -2178,7 +2214,14 @@ mod tests {
                     }),
                 ),
                 ("g".to_string(), Type::FixedBytes(10)),
-                ("a".to_string(), Type::Bool),
+                ("h".to_string(), Type::Bool),
+                (
+                    "i".to_string(),
+                    Type::Enum(TypeEnum {
+                        name: "AA".to_string(),
+                        identifiers: { vec!["A".to_string(), "B".to_string()] },
+                    }),
+                ),
             ],
         };
 
@@ -2195,6 +2238,42 @@ mod tests {
 
         let values = result.retrieve_storage();
         assert_eq!(values, artifact.values);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_storage_enums() -> eyre::Result<()> {
+        // Test enums with different sizes
+        let sizes = [1, 50, 100, 256];
+        for size in sizes {
+            let mut identifiers = Vec::new();
+            for i in 0..size {
+                identifiers.push(format!("Member{}", i));
+            }
+
+            let typ = TypeTuple {
+                types: vec![(
+                    "arg_0".to_string(),
+                    Type::Enum(TypeEnum {
+                        name: format!("Enum{}", size),
+                        identifiers: identifiers.clone(),
+                    }),
+                )],
+            };
+
+            let mut data = vec![0u8; 1000];
+            getrandom::getrandom(&mut data).unwrap();
+
+            let mut u = Unstructured::new(&data);
+            let artifact = ContractGenerator::build_storage(Type::Tuple(typ), &mut u);
+
+            let harness = TestHarness::new()?;
+            let result = harness.deploy(&artifact.source).await?;
+
+            let values = result.retrieve_storage();
+            assert_eq!(values, artifact.values);
+        }
 
         Ok(())
     }
