@@ -156,8 +156,6 @@ impl Service for DapDebugger {
         &self,
         _body: dap::requests::StackTraceArguments,
     ) -> dap::responses::StackTraceResponse {
-        println!("Return trace");
-
         let concrete_trace = self.debug_trace.borrow().trace();
         let len_frames = concrete_trace.stack_frames.len();
 
