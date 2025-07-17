@@ -401,15 +401,16 @@ contract ComplexTypes {{
             Type::Tuple(tuple) => self.generate_struct_value(field_name, tuple),
             Type::Mapping(mapping) => self.generate_mapping_value(field_name, mapping),
             Type::Enum(enum_type) => {
-                let num = self
-                    .u
-                    .int_in_range(1..=enum_type.identifiers.len())
-                    .unwrap();
-                let val = enum_type.identifiers[num - 1].clone();
+                let value = self.generate_random_value(&ty);
 
                 SolidityValue {
-                    setup_code: format!("{} = {}.{};", field_name, enum_type.name, val),
-                    value: JsonValue::String(val),
+                    setup_code: format!(
+                        "{} = {}.{};",
+                        field_name,
+                        enum_type.name,
+                        self.value_to_literal(&value, ty)
+                    ),
+                    value: value,
                 }
             }
         }
@@ -563,6 +564,13 @@ contract ComplexTypes {{
                 };
                 JsonValue::String(num.to_string())
             }
+            Type::Enum(enum_typ) => {
+                let num = self
+                    .u
+                    .int_in_range(0..=enum_typ.identifiers.len() - 1)
+                    .unwrap_or(0);
+                JsonValue::String(enum_typ.identifiers[num].clone())
+            }
             _ => JsonValue::Null,
         }
     }
@@ -578,7 +586,7 @@ contract ComplexTypes {{
                 }
             }
             JsonValue::String(s) => match ty {
-                Type::Int(_) | Type::Uint(_) => s.clone(),
+                Type::Int(_) | Type::Uint(_) | Type::Enum(_) => s.clone(),
                 _ => format!("\"{}\"", s),
             },
             JsonValue::Number(n) => n.to_string(),
@@ -717,6 +725,18 @@ contract ComplexTypes {{
 
                 (setup.trim_end().to_string(), JsonValue::Object(values))
             }
+            Type::Enum(ref enum_type) => {
+                let value = self.generate_random_value(&ty);
+                (
+                    format!(
+                        "{} = {}.{};",
+                        field_name,
+                        enum_type.name,
+                        self.value_to_literal(&value, &ty)
+                    ),
+                    value,
+                )
+            }
             _ => {
                 let value = self.generate_random_value(&ty);
                 (
@@ -802,7 +822,7 @@ impl<'a> Arbitrary<'a> for TypeEnum {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let num_enum = u.int_in_range(1..=100)?;
+        let num_enum = u.int_in_range(1..=10000)?;
         let name = format!("Enum{}", num_enum);
 
         Ok(TypeEnum { name, identifiers })
@@ -1450,6 +1470,11 @@ fn extract_non_state_variables(ast: &Ast, bytecode: CompactBytecode) -> HashMap<
         structs.insert(node.id.unwrap(), node.clone());
     });
 
+    // Collect all enum definitions
+    visit_ast_nodes(ast, NodeType::EnumDefinition, |node| {
+        structs.insert(node.id.unwrap(), node.clone());
+    });
+
     // Collect state variables
     visit_ast_nodes(ast, NodeType::VariableDeclaration, |node: &Node| {
         // Check if it's a state variable (not a parameter or local var)
@@ -1555,6 +1580,7 @@ fn resolve_memory_assignment(typ: Type, offset_bytes: usize, memory: Bytes) -> s
                     | Type::Bool
                     | Type::Uint(_)
                     | Type::Int(_)
+                    | Type::Enum(_)
                     | Type::FixedBytes(_) => current_offset,
                     _ => {
                         // there is a dual reference here for internal elements
@@ -1584,6 +1610,7 @@ fn resolve_memory_assignment(typ: Type, offset_bytes: usize, memory: Bytes) -> s
                     | Type::Bool
                     | Type::Uint(_)
                     | Type::Int(_)
+                    | Type::Enum(_)
                     | Type::FixedBytes(_) => current_offset,
                     _ => {
                         // there is a dual reference here for internal elements
@@ -1617,6 +1644,8 @@ fn resolve_memory_assignment(typ: Type, offset_bytes: usize, memory: Bytes) -> s
                 Type::FixedBytes(_) => value_bytes[0..typ_size as usize].to_vec(),
                 _ => value_bytes[32 - typ_size as usize..].to_vec(),
             };
+
+            println!("type {:?} value_bytes: {:?}", typ, value_bytes);
 
             typ.decode_bytes(&value_bytes).unwrap()
         }
@@ -2298,6 +2327,8 @@ mod tests {
 
             let mut u = Unstructured::new(&data);
             let artifact = ContractGenerator::build_memory(typ.clone(), &mut u);
+
+            println!("artifact {}", artifact.source);
 
             let result = match harness.deploy(&artifact.source).await {
                 Ok(result) => result,
