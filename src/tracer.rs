@@ -2136,12 +2136,11 @@ mod tests {
 
                 // resolve each variable
                 let mut state_result = String::new();
-                // TODO: Handle memory state resolution. The 'test_with_struct_value' uses a struct in memory.
                 for var in vars_in_scope {
                     if let Some(result) = debugger.get_variable(var.id).unwrap() {
                         // TODO: Handle function parameters
-                        let value: String = serde_json::from_str(&result.variables[0].value)?;
-                        state_result += &format!("Variable: {} = {:?}\n", var.name, value);
+                        let value = &result.variables[0].value;
+                        state_result += &format!("Variable: {} = {}\n", var.name, value);
                     }
                 }
 

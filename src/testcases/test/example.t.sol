@@ -40,7 +40,8 @@ contract FooTest is Test {
 
     function test_with_struct_value() external {
         Struct1 memory s = Struct1({
-            value: 1
+            value: 123
         });
+        value = 3;
     }
 }
