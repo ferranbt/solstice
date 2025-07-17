@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2021"
 build = "src/build.rs"
 
+[[bin]]
+name = "solstice"
+path = "src/bin/main.rs"
+
+[lib]
+name = "solstice"
+path = "src/lib.rs"
+
 [dependencies]
 chumsky = "0.8.0"
 ropey = "1.5.0"
