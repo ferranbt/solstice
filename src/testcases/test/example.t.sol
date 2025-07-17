@@ -42,5 +42,6 @@ contract FooTest is Test {
         Struct1 memory s = Struct1({
             value: 123
         });
+        value = 3;
     }
 }

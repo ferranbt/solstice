@@ -1,6 +1,12 @@
 
 trace trace_name:
-    FILTER_TRACE={{trace_name}} cargo test --lib -- tracer::tests::test_debugger_traces --exact --show-output --nocapture
+    @if [ "{{trace_name}}" = "all" ]; then \
+        echo "Running all traces..."; \
+        cargo test --lib -- tracer::tests::test_debugger_traces --exact --show-output --nocapture; \
+    else \
+        echo "Running trace: {{trace_name}}"; \
+        FILTER_TRACE={{trace_name}} cargo test --lib -- tracer::tests::test_debugger_traces --exact --show-output --nocapture; \
+    fi
 
 fuzz-state:
     FUZZ=1 cargo test --lib -- state::fuzz --show-output

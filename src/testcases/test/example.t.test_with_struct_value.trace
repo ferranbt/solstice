@@ -1,5 +1,6 @@
 [FUNC] test_with_struct_value (test/example.t.sol:41)
 [STMT] 42:8 scope=[value, s]
+[STMT] 45:8 scope=[value, s]
 ---
 Variable: value = "0"
 Variable: s = {"value":"123"}
