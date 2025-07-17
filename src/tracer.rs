@@ -157,9 +157,12 @@ fn generate_debug_units(
                                 trace_context.structs.insert(node_id, node.clone());
                             } else if node.node_type == NodeType::VariableDeclaration {
                                 // not sure if I have to filter by stateVariable here
-                                let variable = StatementVisitor::build_debug_variable(node)
-                                    .expect("variable")
-                                    .unwrap();
+                                let variable = StatementVisitor::build_debug_variable(
+                                    node,
+                                    VariableLocation::Storage,
+                                )
+                                .expect("variable")
+                                .unwrap();
 
                                 trace_context.state_variables.insert(node_id, variable);
                                 contract_state_variables.push(node_id);
@@ -298,6 +301,7 @@ enum StatementVisitorError {
     ParseError,
     MissingAttribute(String),
     IncorrectType(NodeType, NodeType),
+    UnexpectedStorageLocation(String),
 }
 
 impl Display for StatementVisitorError {
@@ -313,6 +317,9 @@ impl Display for StatementVisitorError {
                 "IncorrectType: expected {:?}, got {:?}",
                 expected, actual
             ),
+            StatementVisitorError::UnexpectedStorageLocation(loc) => {
+                write!(f, "UnexpectedStorageLocation: {loc}")
+            }
         }
     }
 }
@@ -589,7 +596,9 @@ impl StatementVisitor {
                     }
                 }
                 NodeType::VariableDeclarationStatement => {
-                    let var = if let Some(var) = Self::build_debug_variable(statement)? {
+                    let var = if let Some(var) =
+                        Self::build_debug_variable(statement, VariableLocation::Stack)?
+                    {
                         var
                     } else {
                         continue;
@@ -743,23 +752,37 @@ impl StatementVisitor {
         Ok(())
     }
 
-    fn build_debug_variable(node: &Node) -> StatementVisitorResult<Option<Variable>> {
+    fn build_debug_variable(
+        node: &Node,
+        default_location: VariableLocation,
+    ) -> StatementVisitorResult<Option<Variable>> {
         if let Some(name) = node.attribute("name") {
+            // Code path for state variables and function parameters
             let type_name = node.attribute::<Node>("typeName").unwrap();
             let is_constant = node.attribute::<bool>("constant").unwrap();
+
+            let storage_location = VariableLocation::from_str(
+                node.attribute::<String>("storageLocation")
+                    .ok_or_missing_attribute("storageLocation")?
+                    .as_str(),
+                default_location,
+            )?;
+
+            let state_variable = storage_location == VariableLocation::Storage;
 
             // this is most likely a state variable
             if let Some(id) = node.id {
                 return Ok(Some(Variable {
                     name,
                     id: id as u64,
-                    state_variable: true,
-                    location: VariableLocation::Storage,
+                    state_variable,
+                    location: storage_location,
                     is_constant,
                     type_name,
                 }));
             }
         } else {
+            // code path for block variables
             let declarations = match node.attribute::<Vec<Node>>("declarations") {
                 Some(dec) => dec,
                 None => {
@@ -779,11 +802,19 @@ impl StatementVisitor {
             let type_name = declaration.attribute::<Node>("typeName").unwrap();
             let is_constant = declaration.attribute::<bool>("constant").unwrap();
 
+            let storage_location = VariableLocation::from_str(
+                declaration
+                    .attribute::<String>("storageLocation")
+                    .ok_or_missing_attribute("storageLocation")?
+                    .as_str(),
+                default_location,
+            )?;
+
             return Ok(Some(Variable {
                 name,
                 id: node.id.unwrap() as u64,
                 state_variable: false,
-                location: VariableLocation::Stack, // Assuming memory for non-state variables, TODO: add memory example
+                location: storage_location,
                 is_constant,
                 type_name,
             }));
@@ -817,7 +848,7 @@ impl StatementVisitor {
                 ));
             }
 
-            if let Some(var) = Self::build_debug_variable(&param)? {
+            if let Some(var) = Self::build_debug_variable(&param, VariableLocation::Stack)? {
                 let mut var = var.clone();
                 var.state_variable = false;
 
@@ -1331,6 +1362,19 @@ pub fn generate_trace(
                     call_trace.push((func, steps.len() - 1));
                 }
 
+                // add the parameters to the assignments table
+                let num_params = func.parameters.len();
+                let stack_len = i.state_snapshot.stack.len();
+
+                // The parameters are located in the stack as the last elements in order
+                // in which they are defined in the function. For example, if a function
+                // has two parameters, the first one will be at stack_len - 2 and the
+                // second one at stack_len - 1.
+                for (i, param) in func.parameters.iter().enumerate() {
+                    let stack_pos = stack_len - num_params + i;
+                    assignments.insert(param.id, Assignment::Stack(stack_pos));
+                }
+
                 steps.push(DebugStep {
                     location: func.root_block.location.clone(),
                     path,
@@ -1517,10 +1561,27 @@ pub struct Block {
     pub location: SourceLocation,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum VariableLocation {
     Storage,
+    Memory,
     Stack,
+    Calldata,
+}
+
+impl VariableLocation {
+    fn from_str(s: &str, default: VariableLocation) -> Result<Self, StatementVisitorError> {
+        match s {
+            "storage" => Ok(VariableLocation::Storage),
+            "memory" => Ok(VariableLocation::Memory),
+            "stack" => Ok(VariableLocation::Stack),
+            "calldata" => Ok(VariableLocation::Calldata),
+            "default" => Ok(default),
+            _ => Err(StatementVisitorError::UnexpectedStorageLocation(
+                s.to_string(),
+            )),
+        }
+    }
 }
 
 // Variable is a parsed representation of the Variable declaration NodeType in the AST.
