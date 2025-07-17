@@ -53,7 +53,7 @@ impl Type {
                 Ok(serde_json::Value::Bool(byte != 0))
             }
             Type::Uint(_) => {
-                let value = U256::from_be_slice(&bytes);
+                let value = U256::from_be_slice(bytes);
 
                 Ok(serde_json::Value::String(value.to_string()))
             }
@@ -230,14 +230,14 @@ impl<'a> Arbitrary<'a> for TypeEnum {
         let identifiers = (0..num_identifiers)
             .map(|i| {
                 // Generate a random identifier name
-                let name = format!("Identifier{}", i);
+                let name = format!("Identifier{i}");
                 // Ensure the identifier is unique
                 Ok(name)
             })
             .collect::<Result<Vec<_>, _>>()?;
 
         let num_enum = u.int_in_range(1..=10000)?;
-        let name = format!("Enum{}", num_enum);
+        let name = format!("Enum{num_enum}");
 
         Ok(TypeEnum { name, identifiers })
     }
@@ -338,7 +338,7 @@ impl<'a> Arbitrary<'a> for TypeTuple {
                     _ => break potential_type,
                 }
             };
-            types.push((format!("field_{}", i), ty));
+            types.push((format!("field_{i}"), ty));
         }
 
         Ok(TypeTuple { types })
@@ -519,11 +519,11 @@ impl StateReference {
             Type::Array(TypeArray { ty, size }) => {
                 let mut values = Vec::new();
                 if let Some(size) = size {
-                    let mut element_position = offset.clone();
+                    let mut element_position = offset;
 
                     for _i in 0..size {
                         // For fixed-size arrays, elements are stored sequentially
-                        let val = self.resolve_type(*ty.clone(), element_position.clone());
+                        let val = self.resolve_type(*ty.clone(), element_position);
 
                         // Advance position based on the element type
                         let (typ_num_slots, typ_num_bytes) =
@@ -564,7 +564,7 @@ impl StateReference {
                     let (typ_num_slots, typ_num_bytes) = (ty.num_storage_slots(), ty.get_bytes());
 
                     for _i in 0..length {
-                        let val = self.resolve_type(*ty.clone(), element_position.clone());
+                        let val = self.resolve_type(*ty.clone(), element_position);
 
                         if typ_num_slots == 1
                             && element_position.index_in_slot + typ_num_bytes <= SLOT_SIZE
@@ -587,7 +587,7 @@ impl StateReference {
                 let (offsets, _last_storage) = StateReference::compute_offsets(types.clone());
 
                 for ((name, ty), (_, local_offset)) in types.into_iter().zip(offsets.into_iter()) {
-                    let mut global_location = offset.clone();
+                    let mut global_location = offset;
 
                     global_location.advance_slot_num(local_offset.slot_as_u32());
                     global_location.move_index(local_offset.index_in_slot);
@@ -617,9 +617,9 @@ impl StateReference {
                 position.advance_slot();
             }
 
-            offsets.push((name, position.clone()));
+            offsets.push((name, position));
 
-            let num_slots = ty.num_storage_slots() as u32;
+            let num_slots = ty.num_storage_slots();
             if num_slots == 1 && position.index_in_slot + num_bytes <= SLOT_SIZE {
                 position.move_index(num_bytes);
             } else {
@@ -701,7 +701,7 @@ pub fn parse_variable_declaration_type(
             // Handle bytes<N>
             if name.starts_with("bytes") && name.len() > 5 {
                 let size = name[5..].parse::<u16>().unwrap();
-                if size >= 1 && size <= 32 {
+                if (1..=32).contains(&size) {
                     return Ok(Type::FixedBytes(size));
                 }
             }
@@ -711,11 +711,11 @@ pub fn parse_variable_declaration_type(
                 return Ok(Type::Uint(Some(256)));
             } else if name == "int" {
                 return Ok(Type::Int(Some(256)));
-            } else if name.starts_with("int") {
-                let size = name[3..].parse::<u16>().unwrap();
+            } else if let Some(size_str) = name.strip_prefix("int") {
+                let size = size_str.parse::<u16>().unwrap();
                 return Ok(Type::Int(Some(size)));
-            } else if name.starts_with("uint") {
-                let size = name[4..].parse::<u16>().unwrap();
+            } else if let Some(size_str) = name.strip_prefix("uint") {
+                let size = size_str.parse::<u16>().unwrap();
                 return Ok(Type::Uint(Some(size)));
             }
 
@@ -730,7 +730,7 @@ pub fn parse_variable_declaration_type(
                 }
             };
 
-            return Ok(typ);
+            Ok(typ)
         }
         NodeType::Mapping => {
             let key_type = typ.attribute("keyType").unwrap();

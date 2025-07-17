@@ -410,14 +410,14 @@ impl Debugger {
                     ..Default::default()
                 };
 
-                return Ok(Some(VariablesResponse {
+                Ok(Some(VariablesResponse {
                     variables: vec![var],
-                }));
+                }))
             }
             Assignment::Stack(index) => {
                 tracing::info!("Variable is in stack, index: {:?}", index);
 
-                let value = match step.state_snapshot.stack.get(index as usize).cloned() {
+                let value = match step.state_snapshot.stack.get(index).cloned() {
                     Some(value) => value,
                     None => {
                         return Err(eyre::eyre!("No value found in stack at index {}", index));
@@ -457,9 +457,9 @@ impl Debugger {
                             ..Default::default()
                         };
 
-                        return Ok(Some(VariablesResponse {
+                        Ok(Some(VariablesResponse {
                             variables: vec![var],
-                        }));
+                        }))
                     }
                     _ => unreachable!("Variable storage handled in the other case"),
                 }
