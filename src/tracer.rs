@@ -1811,6 +1811,60 @@ const SKIP_TRACE_LIST: &[&str] = &[
 ];
 
 #[cfg(test)]
+pub mod testing {
+    use crate::{tracer::DebugTrace, TraceArgs};
+
+    pub fn trace_function(name: &str, functions: &str) -> eyre::Result<DebugTrace> {
+        let contract = format!(
+            "// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+contract TestContract {{
+    {}
+}}
+",
+            functions,
+        );
+
+        generate_test_trace(name, "test", &contract)
+    }
+
+    fn generate_test_trace(
+        test_file_name: &str,
+        test_name: &str,
+        contract: &str,
+    ) -> eyre::Result<DebugTrace> {
+        // write the file into testcases test/debug directory
+        let workspace_path = std::env::var("CARGO_MANIFEST_DIR")? + "/src/testcases";
+        let test_dir = workspace_path.clone() + "/test/debug";
+
+        // TODO: https://github.com/ferranbt/solstice/issues/50
+        let out_dir = std::path::Path::new(&workspace_path).join("out");
+        if out_dir.exists() {
+            std::fs::remove_dir_all(&out_dir)?;
+        }
+
+        let file_path = std::path::Path::new(&test_dir).join(format!("{}.t.sol", test_file_name));
+        // Create all parent directories if they don't exist
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&file_path, contract)?;
+
+        let args = TraceArgs {
+            workspace: Some(workspace_path),
+            match_test: test_name.to_string(),
+            match_path: file_path.to_str().unwrap().to_string(),
+            dump: None,
+            pprof: None,
+            flamegraph: None,
+        };
+
+        args.execute_trace()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::debugger::Debugger;

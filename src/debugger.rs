@@ -268,6 +268,8 @@ pub struct Breakpoint {
     pub line: usize,
 }
 
+type DebugLocation = usize;
+
 impl Debugger {
     pub fn new(trace: DebugTrace) -> Self {
         Self {
@@ -281,7 +283,12 @@ impl Debugger {
         self.breakpoints.push(Breakpoint { source, line });
     }
 
-    pub fn prev(&mut self) -> Option<usize> {
+    pub fn debug_location(&self) -> DebugLocation {
+        let step = &self.trace.steps[self.indx];
+        step.location.line
+    }
+
+    pub fn prev(&mut self) -> Option<DebugLocation> {
         // go back to the previous statement
         while self.indx > 0 {
             self.indx -= 1;
@@ -289,39 +296,49 @@ impl Debugger {
                 self.trace.steps[self.indx].kind,
                 StepKind::FunctionDefinition(_)
             ) {
-                return Some(self.indx);
+                return Some(self.debug_location());
             }
         }
         None
     }
 
-    pub fn next(&mut self) -> Option<usize> {
+    pub fn next(&mut self) -> Option<DebugLocation> {
         // continue until the next statement in the same function
         let call_trace_length = self.trace.steps[self.indx].call_trace.len();
+        let current_line = self.debug_location();
 
         while self.indx < self.trace.steps.len() - 1 {
             self.indx += 1;
             let step = &self.trace.steps[self.indx];
 
+            if step.location.line == current_line {
+                // if the line is the same, skip it, this happens if you have a function call
+                // because we might store steps for the function call and the statement in which
+                // the call is made. In this case, we do not want to stop again in the statement (same line)
+                // but to jump directly to the next one.
+                continue;
+            }
             if matches!(step.kind, StepKind::FunctionDefinition(_)) {
                 continue;
             }
-            if step.call_trace.len() != call_trace_length {
+            if step.call_trace.len() > call_trace_length {
+                // this signal it is a nested step, we should not enter any nested steps
+                // with the 'next' function, we can only go up.
                 continue;
             }
-            return Some(self.indx);
+            return Some(self.debug_location());
         }
         None
     }
 
-    pub fn cont(&mut self) -> Option<usize> {
+    pub fn cont(&mut self) -> Option<DebugLocation> {
         // continue until we hit a breakpoint
         while self.indx < self.trace.steps.len() - 1 {
             self.indx += 1;
             let step = &self.trace.steps[self.indx];
 
             if self.is_breakpoint(step.path.clone(), step.location.line) {
-                return Some(self.indx);
+                return Some(self.debug_location());
             }
         }
         None
@@ -333,18 +350,18 @@ impl Debugger {
             .any(|bp| bp.source == path && bp.line == line)
     }
 
-    pub fn step_out(&mut self) -> Option<usize> {
+    pub fn step_out(&mut self) -> Option<DebugLocation> {
         // return to the function caller, pick the latest element from the call trace
         match self.trace.steps[self.indx].call_trace.clone().last() {
             Some(call_trace) => {
                 self.indx = *call_trace;
-                Some(self.indx)
+                Some(self.debug_location())
             }
             None => None,
         }
     }
 
-    pub fn step_in(&mut self) -> Option<usize> {
+    pub fn step_in(&mut self) -> Option<DebugLocation> {
         // if next item is a function call, go inside it.
         // otherwise, return the next item in the current function
         if matches!(self.trace.steps[self.indx].kind, StepKind::FunctionCall) {
@@ -355,7 +372,7 @@ impl Debugger {
                 if matches!(step.kind, StepKind::FunctionDefinition(_)) {
                     continue;
                 }
-                return Some(self.indx);
+                return Some(self.debug_location());
             }
         }
         self.next()
@@ -498,116 +515,220 @@ impl Debugger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracer::{DebugStep, SourceLocation};
+    use crate::tracer::testing::trace_function;
 
     #[test]
-    fn test_debugger_breakpoints_continue() {
-        let debug_trace = DebugTrace {
-            steps: vec![
-                DebugStep {
-                    path: "test.sol".to_string(),
-                    ..Default::default()
-                },
-                DebugStep {
-                    path: "test.sol".to_string(),
-                    ..Default::default()
-                },
-                DebugStep {
-                    path: "test.sol".to_string(),
-                    location: SourceLocation {
-                        line: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                DebugStep {
-                    path: "test.sol".to_string(),
-                    ..Default::default()
-                },
-                DebugStep {
-                    path: "test.sol".to_string(),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
+    fn test_debugger_breakpoints_continue() -> eyre::Result<()> {
+        let debug_trace = trace_function(
+            "test_debugger_breakpoints_continue",
+            "function test() public {
+           uint256 a = 1; // line 6
+           uint256 b = 2; // line 7
+           uint256 c = 3; // line 8
+       }",
+        )?;
 
         let mut debugger = Debugger::new(debug_trace);
-        debugger.set_breakpoint("test.sol".to_string(), 1);
 
-        assert_eq!(debugger.cont(), Some(2));
+        // get the name of the file from the trace because we need
+        // the absolute path to set the breakpoint
+        let abs_path = debugger.trace.steps[0].path.clone();
+        debugger.set_breakpoint(abs_path.to_string(), 7);
 
-        assert_eq!(debugger.next(), Some(3));
-        assert_eq!(debugger.next(), Some(4));
-
-        assert_eq!(debugger.prev(), Some(3));
-
-        // there are no more breakpoints
+        assert_eq!(debugger.cont(), Some(7));
+        assert_eq!(debugger.next(), Some(8));
+        assert_eq!(debugger.prev(), Some(7));
+        assert_eq!(debugger.prev(), Some(6));
+        assert_eq!(debugger.cont(), Some(7));
         assert_eq!(debugger.cont(), None);
+
+        Ok(())
     }
 
     #[test]
-    fn test_debugger_step_in_out() {
-        let debug_trace = DebugTrace {
-            steps: vec![
-                DebugStep {
-                    ..Default::default()
-                },
-                DebugStep {
-                    path: "test.sol".to_string(),
-                    location: SourceLocation {
-                        line: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                DebugStep {
-                    kind: StepKind::FunctionCall,
-                    ..Default::default()
-                },
-                DebugStep {
-                    kind: StepKind::FunctionDefinition("test".to_string()),
-                    ..Default::default()
-                },
-                DebugStep {
-                    call_trace: vec![2],
-                    ..Default::default()
-                },
-                DebugStep {
-                    call_trace: vec![2],
-                    ..Default::default()
-                },
-                DebugStep {
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
+    fn test_debugger_next_skips_function_calls() -> eyre::Result<()> {
+        // When using 'next' on a function call, it should skip over the entire
+        // function execution and go to the next statement, not enter the function.
+
+        let debug_trace = trace_function(
+            "test_debugger_next_skips_function_calls",
+            "function helper() public returns (uint256) { // line 5
+           uint256 a = 10; // line 6
+           return a; // line 7
+       }
+       function test() public {
+           uint256 x = 5; // line 10
+           uint256 y = helper(); // line 11
+           uint256 z = 15; // line 12
+       }",
+        )?;
 
         let mut debugger = Debugger::new(debug_trace);
-        debugger.set_breakpoint("test.sol".to_string(), 1);
 
-        assert_eq!(debugger.cont(), Some(1));
+        // Navigate through test function using only 'next'
+        assert_eq!(debugger.next(), Some(10)); // uint256 x = 5
+        assert_eq!(debugger.next(), Some(11)); // uint256 y = helper()
+        assert_eq!(debugger.next(), Some(12)); // uint256 z = 15 (skipped helper internals)
 
-        // step in should act as a step over if no function call is found
-        assert_eq!(debugger.step_in(), Some(2));
+        // Should never see lines 5, 6, or 7 (inside helper function)
+        // because we never called step_in()
 
-        // step over should skip the function call
-        assert_eq!(debugger.next(), Some(6));
+        Ok(())
+    }
 
-        // prev goes back in the execution call to the instructions in the nested
-        // function call
-        assert_eq!(debugger.prev(), Some(5));
-        assert_eq!(debugger.prev(), Some(4));
-        assert_eq!(debugger.prev(), Some(2)); // 2 since we skip functionCall
+    #[test]
+    fn test_debugger_next_skips_function_calls_within_statement() -> eyre::Result<()> {
+        // When a statement contains multiple function calls, 'next' should skip over
+        // all the individual function call steps and land on the next statement.
+        //
+        // Example: `uint256 y = call() + call();` generates these debug steps:
+        // 1. [CALL] call() - line 10
+        // 2. [CALL] call() - line 10
+        // 3. [STMT] assignment - line 10
+        // 4. [STMT] next statement - line 11
+        //
+        // Using 'next' from step 1 should jump directly to step 4, skipping the
+        // internal function calls and statement completion within the same line.
 
-        // step in goes inside the function call
-        assert_eq!(debugger.step_in(), Some(4));
-        assert_eq!(debugger.next(), Some(5));
+        let debug_trace = trace_function(
+            "test_debugger_next_skips_function_calls_within_statement",
+            "function call() public returns (uint256) { // line 5
+                return 42;
+            }
+            function test() public {
+                uint256 x = 10; // line 9
+                uint256 y = call() + call(); // line 10
+                uint256 z = 20; // line 11
+            }",
+        )?;
 
-        // step out goes out of the function call to the caller
-        assert_eq!(debugger.step_out(), Some(2));
-        // again, step over should skip the function call
-        assert_eq!(debugger.next(), Some(6));
+        let mut debugger = Debugger::new(debug_trace);
+        assert_eq!(debugger.next(), Some(9));
+        assert_eq!(debugger.next(), Some(10));
+        assert_eq!(debugger.next(), Some(11));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_debugger_next_skips_standalone_function_calls() -> eyre::Result<()> {
+        // When using 'next' on a standalone function call (no assignment),
+        // it should skip over the entire function execution and go to the next statement.
+
+        let debug_trace = trace_function(
+            "test_debugger_next_skips_standalone_function_calls",
+            "function helper() public { // line 5
+           uint256 a = 10; // line 6
+       }
+       function test() public {
+           uint256 x = 5; // line 9
+           helper(); // line 10 - standalone call
+           uint256 z = 15; // line 11
+       }",
+        )?;
+
+        let mut debugger = Debugger::new(debug_trace);
+
+        assert_eq!(debugger.next(), Some(9)); // uint256 x = 5
+        assert_eq!(debugger.next(), Some(10)); // helper()
+        assert_eq!(debugger.next(), Some(11)); // uint256 z = 15 (skipped helper internals)
+
+        // Should never see lines 5 or 6 (inside helper function)
+        // because we never called step_in()
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_debugger_next_stays_within_current_function_scope() -> eyre::Result<()> {
+        // When inside a function (after step-in), 'next' should advance within
+        // that function's scope, not return to the caller.
+        //
+        // Example: stepping into `call()` then using 'next':
+        // 1. [CALL] call() - line 10 (in test function)
+        // 2. [FUNC] call - line 5 (stepped into call function)
+        // 3. [STMT] return 42 - line 6 (inside call function)
+        // 4. [STMT] assignment completion - line 10 (back in test function)
+        // 5. [STMT] next statement - line 11 (in test function)
+        //
+        // Using 'next' from step 3 should stay in call() function scope.
+        // Only when call() completes should we return to test() function.
+
+        let debug_trace = trace_function(
+            "test_debugger_next_stays_within_current_function_scope",
+            "function call() public returns (uint256) { // line 5
+            uint256 x = 10; // line 6
+            return 42; // line 7
+        }
+        function test() public {
+            uint256 x = 10; // line 10
+            uint256 y = call(); // line 11
+            call(); // line 12 - standalone call
+            uint256 z = 20; // line 13
+        }",
+        )?;
+
+        let mut debugger = Debugger::new(debug_trace);
+
+        assert_eq!(debugger.next(), Some(10)); // uint256 x = 10;
+        assert_eq!(debugger.next(), Some(11)); // uint256 y = call()
+        assert_eq!(debugger.step_in(), Some(6)); // uint256 x = 10 (step into call function)
+        assert_eq!(debugger.next(), Some(7)); // return 42
+        assert_eq!(debugger.next(), Some(11)); // uint256 y = call()
+        assert_eq!(debugger.next(), Some(12)); // call()
+        assert_eq!(debugger.step_in(), Some(6)); // uint256 x = 10
+        assert_eq!(debugger.next(), Some(7)); // return 42
+        assert_eq!(debugger.next(), Some(13)); // uint256 z = 20
+        assert_eq!(debugger.next(), None); // No more steps
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_debugger_step_in_step_out_navigation() -> eyre::Result<()> {
+        // Tests the complete step-in/step-out workflow:
+        // 1. step_in on function call enters the function
+        // 2. step_in on non-function-call acts like next (step over)
+        // 3. step_out exits current function scope back to caller
+        // 4. Navigation works correctly across function boundaries
+
+        let debug_trace = trace_function(
+            "test_debugger_step_in_step_out_navigation",
+            "function helper() public returns (uint256) { // line 5
+            uint256 a = 10; // line 6
+            return a; // line 7
+        }
+        function test() public {
+            uint256 x = 5; // line 10
+            uint256 y = helper(); // line 11
+            uint256 z = 15; // line 12
+        }",
+        )?;
+
+        let mut debugger = Debugger::new(debug_trace);
+
+        // Start at first statement
+        assert_eq!(debugger.next(), Some(10)); // uint256 x = 5
+
+        // step_in on non-function-call should act like next
+        assert_eq!(debugger.step_in(), Some(11)); // uint256 y = helper()
+
+        // step_in on function call should enter the function
+        assert_eq!(debugger.step_in(), Some(6)); // function helper() definition
+        assert_eq!(debugger.next(), Some(7)); // return a
+
+        // step_out should exit function scope back to caller
+        assert_eq!(debugger.step_out(), Some(11)); // uint256 y = helper(); (back in test function)
+        assert_eq!(debugger.prev(), Some(10)); // uint256 x = 5;
+
+        // step_in again to verify it still works
+        assert_eq!(debugger.next(), Some(11)); // uint256 y = helper()
+        assert_eq!(debugger.step_in(), Some(6)); // Re-enter helper function
+
+        // Test that next from call site skips the function
+        assert_eq!(debugger.prev(), Some(11)); // Back to call site
+        assert_eq!(debugger.next(), Some(12)); // Should skip helper() execution
+
+        Ok(())
     }
 }
