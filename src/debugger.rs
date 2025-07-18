@@ -168,15 +168,20 @@ impl Service for DapDebugger {
             .map(|(i, trace)| {
                 let source_location = trace.location;
 
+                let filename = std::path::Path::new(&trace.path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+
                 dap::types::StackFrame {
                     id: i as i64,
-                    name: format!("Frame {i}"),
+                    name: trace.parent_func.clone(),
                     line: source_location.line as i64,
                     column: (source_location.column + 1) as i64,
                     end_line: source_location.end_line.map(|l| l as i64),
                     end_column: source_location.end_column.map(|c| (c + 1) as i64),
                     source: Some(dap::types::Source {
-                        name: Some(format!("Frame {i}")),
+                        name: Some(filename.to_string()),
                         path: Some(trace.path.clone()),
                         presentation_hint: Some(PresentationHint::Normal),
                         source_reference: None,
@@ -692,9 +697,17 @@ mod tests {
         assert_eq!(debugger.next(), Some(11)); // uint256 y = call()
         assert_eq!(debugger.next(), Some(12)); // call()
         assert_eq!(debugger.step_in(), Some(6)); // uint256 x = 10
+
+        let trace = debugger.trace();
+        assert_eq!(trace.stack_frames[0].parent_func, "test");
+        assert_eq!(trace.stack_frames[1].parent_func, "call");
+
         assert_eq!(debugger.next(), Some(7)); // return 42
         assert_eq!(debugger.next(), Some(13)); // uint256 z = 20
         assert_eq!(debugger.next(), None); // No more steps
+
+        let trace = debugger.trace();
+        assert_eq!(trace.stack_frames[0].parent_func, "test");
 
         Ok(())
     }

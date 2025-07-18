@@ -1026,6 +1026,7 @@ pub struct DebugTrace {
 
 #[derive(Debug, Clone)]
 pub struct StackFrame {
+    pub parent_func: String,
     pub path: String,
     pub location: SourceLocation,
 }
@@ -1036,6 +1037,28 @@ pub struct DebugTraceStep {
 }
 
 impl DebugTrace {
+    pub fn find_parent_function_name(&self, step_index: usize) -> Option<String> {
+        // from a given step index, find the parent function name
+        // we assume that the parent function is the first step with a FunctionDefinition kind
+        // that is before the given step index and in the same call trace level
+        let step = self.steps.get(step_index).unwrap();
+        let call_trace_len = step.call_trace.len();
+
+        let mut current_index = step_index;
+        while current_index > 0 {
+            current_index -= 1;
+            let step = self.steps.get(current_index).unwrap();
+            if let StepKind::FunctionDefinition(name) = &step.kind {
+                // the call trace only increases on the first statement of the function
+                let step_call_trace = self.steps.get(current_index + 1).unwrap();
+                if step_call_trace.call_trace.len() == call_trace_len {
+                    return Some(name.clone());
+                }
+            }
+        }
+        None
+    }
+
     pub fn trace(&self, indx: usize) -> DebugTraceStep {
         let mut call_trace = Vec::new();
         let step = self.steps.get(indx).unwrap();
@@ -1043,11 +1066,19 @@ impl DebugTrace {
         // retrieve the call trace for this step
         for step_trace in step.call_trace.iter() {
             let parent_step = self.steps.get(*step_trace).unwrap();
-            call_trace.push(StackFrame::from(parent_step));
+            assert_eq!(parent_step.kind, StepKind::FunctionCall);
+
+            let parent_func = self
+                .find_parent_function_name(*step_trace)
+                .unwrap_or_else(|| "unknown".to_string());
+            call_trace.push(new_stack_frame(parent_step, parent_func));
         }
 
         // now add the current step to the call trace
-        call_trace.push(StackFrame::from(step));
+        let parent_func = self
+            .find_parent_function_name(indx)
+            .unwrap_or_else(|| "unknown".to_string());
+        call_trace.push(new_stack_frame(step, parent_func));
 
         DebugTraceStep {
             stack_frames: call_trace,
@@ -1095,12 +1126,11 @@ pub struct DebugStep {
     pub state_snapshot: StateSnapshot,
 }
 
-impl From<&DebugStep> for StackFrame {
-    fn from(step: &DebugStep) -> Self {
-        StackFrame {
-            location: step.location.clone(),
-            path: step.path.clone(),
-        }
+fn new_stack_frame(step: &DebugStep, parent_func: String) -> StackFrame {
+    StackFrame {
+        parent_func,
+        location: step.location.clone(),
+        path: step.path.clone(),
     }
 }
 
