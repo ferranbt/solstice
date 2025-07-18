@@ -35,6 +35,7 @@ pub mod built_info {
 mod builder;
 mod dap;
 mod debugger;
+mod metrics;
 mod state;
 mod tracer;
 
@@ -712,6 +713,11 @@ impl TraceArgs {
         if let Some(dump_path) = &self.dump {
             std::fs::write(dump_path, serde_json::to_string(&debug_trace)?)?;
         }
+
+        tracing::info!("Debug trace generated successfully");
+        debug_trace.metrics.iter().for_each(|(action, duration)| {
+            tracing::info!("{:?}: {:?}", action, duration);
+        });
 
         Ok(())
     }

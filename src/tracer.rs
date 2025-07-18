@@ -1,3 +1,4 @@
+use crate::metrics::{Action, MetricsRecorder};
 use crate::state::{parse_variable_declaration_type, StateReference, StoragePosition, Type};
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
@@ -22,6 +23,7 @@ use std::fs;
 use std::hash::Hash;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -1019,6 +1021,7 @@ pub struct DebugTrace {
     pub variables: HashMap<u64, Variable>,
     pub variable_types: HashMap<u64, Type>,
     pub assignments: HashMap<u64, Assignment>,
+    pub metrics: Vec<(Action, Duration)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1147,6 +1150,8 @@ pub fn generate_trace(
     workspace_path: &str,
     trace_path: &str,
 ) -> Result<(DebugTrace, TraceContext), TraceError> {
+    let mut metrics_recorder = MetricsRecorder::new();
+
     let content = fs::read_to_string(trace_path)
         .map_err(|e| TraceError::FailedToReadFile(trace_path.to_string(), e))?;
 
@@ -1155,6 +1160,8 @@ pub fn generate_trace(
 
     let root_path = Path::new(workspace_path);
     let (mut debug_units, trace_context) = generate_debug_units(root_path, None).unwrap();
+
+    metrics_recorder.capture(Action::GenerateDebugUnits);
 
     // for all the debug units resolve the state_variables
     // we have to do it here before the trace because the scope search requires having the state variables
@@ -1186,6 +1193,8 @@ pub fn generate_trace(
             .or_insert_with(Vec::new)
             .push(dd.clone());
     }
+
+    metrics_recorder.capture(Action::PrepareDebugUnits);
 
     let mut matched_locations = Vec::new();
 
@@ -1285,6 +1294,8 @@ pub fn generate_trace(
         }
     }
 
+    metrics_recorder.capture(Action::MatchLocations);
+
     let chunks = matched_locations
         .linear_group_by(|a, b| source_element_matches(&a.source_location, &b.source_location));
     let mut final_matched_locations = Vec::new();
@@ -1339,6 +1350,8 @@ pub fn generate_trace(
             }
         }
     }
+
+    metrics_recorder.capture(Action::FinalizeMatchedLocations);
 
     let mut steps = Vec::new();
     let mut call_trace = Vec::new();
@@ -1426,6 +1439,8 @@ pub fn generate_trace(
         }
     }
 
+    metrics_recorder.capture(Action::GenerateSteps);
+
     // loop over all the debug units and get the variable definitions
     let mut variable_definitions = HashMap::new();
     for debug_unit in debug_units.values() {
@@ -1494,12 +1509,15 @@ pub fn generate_trace(
         }
     }
 
+    metrics_recorder.capture(Action::GenerateVariableDefinitions);
+
     Ok((
         DebugTrace {
             steps,
             variables: variable_definitions,
             variable_types,
             assignments,
+            metrics: metrics_recorder.metrics,
         },
         trace_context,
     ))
