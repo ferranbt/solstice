@@ -61,6 +61,7 @@ tracing-subscriber = "0.3"
 thiserror = "1.0"
 slice-group-by = "0.3.1"
 shellexpand = "3.1.1"
+pprof = { version = "0.15.0", features = ["flamegraph", "frame-pointer", "prost-codec"] }
 
 [build-dependencies]
 built = { version = "0.7.1", features = ["git2", "chrono"] }
