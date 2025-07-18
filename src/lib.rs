@@ -15,7 +15,7 @@ use tracer::{execute_command, generate_trace};
 
 use crate::builder::DefinitionType;
 use crate::builder::{Builder, Files, GlobalCache};
-use crate::tracer::Forge;
+use crate::tracer::{DebugTrace, Forge};
 use pprof::protos::Message;
 use std::io::Write;
 
@@ -706,15 +706,7 @@ pub struct TraceArgs {
 }
 
 impl TraceArgs {
-    pub fn run(&self) -> eyre::Result<()> {
-        let pprof = if self.pprof.is_some() || self.flamegraph.is_some() {
-            tracing::info!("Starting pprof profiler");
-            let guard = pprof::ProfilerGuard::new(100).unwrap();
-            Some(guard)
-        } else {
-            None
-        };
-
+    pub fn execute_trace(&self) -> eyre::Result<DebugTrace> {
         let workspace_path = self.workspace.clone().unwrap_or_else(|| {
             // Use the current directory as the workspace path
             std::env::current_dir()
@@ -728,6 +720,19 @@ impl TraceArgs {
         let _ = execute_command(&workspace_path, debug_cmd.clone())?;
 
         let (debug_trace, _) = generate_trace(&workspace_path, TEMP_FORGE_DUMP_PATH)?;
+        Ok(debug_trace)
+    }
+
+    pub fn run(&self) -> eyre::Result<()> {
+        let pprof = if self.pprof.is_some() || self.flamegraph.is_some() {
+            tracing::info!("Starting pprof profiler");
+            let guard = pprof::ProfilerGuard::new(100).unwrap();
+            Some(guard)
+        } else {
+            None
+        };
+
+        let debug_trace = self.execute_trace()?;
         if let Some(dump_path) = &self.dump {
             std::fs::write(dump_path, serde_json::to_string(&debug_trace)?)?;
         }
