@@ -520,11 +520,11 @@ mod tests {
 
     // Run the test sequentially because of https://github.com/ferranbt/solstice/issues/50
     // we have to remove the out folder every time we run the tests so it is not thread safe.
-    static TEST_MUTEX: Mutex<()> = Mutex::new(());
+    static TEST_SEQUENTIAL_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_debugger_breakpoints_continue() -> eyre::Result<()> {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_SEQUENTIAL_MUTEX.lock().unwrap();
 
         let debug_trace = trace_function(
             "test_debugger_breakpoints_continue",
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_debugger_next_skips_function_calls() -> eyre::Result<()> {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_SEQUENTIAL_MUTEX.lock().unwrap();
 
         // When using 'next' on a function call, it should skip over the entire
         // function execution and go to the next statement, not enter the function.
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_debugger_next_skips_function_calls_within_statement() -> eyre::Result<()> {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_SEQUENTIAL_MUTEX.lock().unwrap();
 
         // When a statement contains multiple function calls, 'next' should skip over
         // all the individual function call steps and land on the next statement.
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn test_debugger_next_skips_standalone_function_calls() -> eyre::Result<()> {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_SEQUENTIAL_MUTEX.lock().unwrap();
 
         // When using 'next' on a standalone function call (no assignment),
         // it should skip over the entire function execution and go to the next statement.
@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn test_debugger_next_stays_within_current_function_scope() -> eyre::Result<()> {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_SEQUENTIAL_MUTEX.lock().unwrap();
 
         // When inside a function (after step-in), 'next' should advance within
         // that function's scope, not return to the caller.
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn test_debugger_step_in_step_out_navigation() -> eyre::Result<()> {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_SEQUENTIAL_MUTEX.lock().unwrap();
 
         // Tests the complete step-in/step-out workflow:
         // 1. step_in on function call enters the function
