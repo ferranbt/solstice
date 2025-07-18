@@ -695,11 +695,25 @@ pub struct TraceArgs {
     /// Path to store the output of the trace
     #[arg(long)]
     pub dump: Option<String>,
+
+    /// Path to store the pprof output
+    #[arg(long)]
+    pub pprof: Option<String>,
+
+    /// Path to store the flamegraph output
+    #[arg(long)]
+    pub flamegraph: Option<String>,
 }
 
 impl TraceArgs {
     pub fn run(&self) -> eyre::Result<()> {
-        let guard = pprof::ProfilerGuard::new(100).unwrap();
+        let pprof = if self.pprof.is_some() || self.flamegraph.is_some() {
+            tracing::info!("Starting pprof profiler");
+            let guard = pprof::ProfilerGuard::new(100).unwrap();
+            Some(guard)
+        } else {
+            None
+        };
 
         let workspace_path = self.workspace.clone().unwrap_or_else(|| {
             // Use the current directory as the workspace path
@@ -723,18 +737,24 @@ impl TraceArgs {
             tracing::info!("{:?}: {:?}", action, duration);
         });
 
-        if let Ok(report) = guard.report().build() {
-            let file = std::fs::File::create("flamegraph.svg").unwrap();
-            report.flamegraph(file).unwrap();
+        if let Some(guard) = pprof {
+            if let Ok(report) = guard.report().build() {
+                if let Some(flamegraph_path) = &self.flamegraph {
+                    tracing::info!("Generating flamegraph at {:?}", flamegraph_path);
+                    let file = std::fs::File::create(flamegraph_path).unwrap();
+                    report.flamegraph(file).unwrap();
+                }
 
-            {
-                let profile = report.pprof().unwrap();
-                let mut file = std::fs::File::create("profile.pb").unwrap();
-                let mut content = Vec::new();
-                profile.encode(&mut content).unwrap();
-                file.write_all(&content).unwrap();
+                if let Some(pprof_path) = &self.pprof {
+                    tracing::info!("Generating pprof at {:?}", pprof_path);
+                    let profile = report.pprof().unwrap();
+                    let mut file = std::fs::File::create(pprof_path).unwrap();
+                    let mut content = Vec::new();
+                    profile.encode(&mut content).unwrap();
+                    file.write_all(&content).unwrap();
+                }
             }
-        };
+        }
 
         Ok(())
     }

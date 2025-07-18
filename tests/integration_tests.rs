@@ -55,6 +55,8 @@ async fn test_repo(
         match_path: test_path.into(),
         workspace: Some(format!("external/{repo_name}").into()),
         dump: Some("/tmp/dump.json".into()),
+        pprof: None,
+        flamegraph: None,
     };
     println!("Running test with args: {:?}", args);
     args.run()?;
