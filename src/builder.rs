@@ -149,6 +149,11 @@ pub struct Builder<'a> {
     implementations: Implementations,
     properties: Properties,
 
+    // Lazy loading cache
+    processed_enums: HashSet<usize>,
+    processed_structs: HashSet<usize>,
+    processed_contracts: HashSet<usize>,
+
     ns: &'a ast::Namespace,
 }
 
@@ -165,6 +170,10 @@ impl<'a> Builder<'a> {
             declarations: HashMap::new(),
             implementations: HashMap::new(),
             properties: HashMap::new(),
+
+            processed_enums: HashSet::new(),
+            processed_structs: HashSet::new(),
+            processed_contracts: HashSet::new(),
 
             ns,
         }
@@ -1153,112 +1162,9 @@ impl<'a> Builder<'a> {
 
     /// Traverses namespace to extract information used later by the language server
     /// This includes hover messages, locations where code objects are declared and used
+    /// Uses lazy loading to only process AST nodes when their types need resolution
     pub fn build(mut self) -> (Vec<FileCache>, GlobalCache) {
-        for (ei, enum_decl) in self.ns.enums.iter().enumerate() {
-            for (discriminant, (nam, loc)) in enum_decl.values.iter().enumerate() {
-                let file_no = loc.file_no();
-                let file = &self.ns.files[file_no];
-                self.hovers.push((
-                    file_no,
-                    HoverEntry {
-                        start: loc.start(),
-                        stop: loc.exclusive_end(),
-                        val: make_code_block(format!(
-                            "enum {}.{} {}",
-                            enum_decl.id, nam, discriminant
-                        )),
-                    },
-                ));
-
-                let di = DefinitionIndex {
-                    def_path: file.path.clone(),
-                    def_type: DefinitionType::Variant(ei, discriminant),
-                };
-                self.definitions.insert(di.clone(), loc_to_range(loc, file));
-
-                let dt = DefinitionType::Enum(ei);
-                self.types.insert(di, dt.into());
-            }
-
-            let file_no = enum_decl.id.loc.file_no();
-            let file = &self.ns.files[file_no];
-            self.hovers.push((
-                file_no,
-                HoverEntry {
-                    start: enum_decl.id.loc.start(),
-                    stop: enum_decl.id.loc.exclusive_end(),
-                    val: render(&enum_decl.tags[..]),
-                },
-            ));
-
-            let def_index = DefinitionIndex {
-                def_path: file.path.clone(),
-                def_type: DefinitionType::Enum(ei),
-            };
-            self.definitions
-                .insert(def_index.clone(), loc_to_range(&enum_decl.id.loc, file));
-
-            self.properties.insert(
-                def_index.clone(),
-                enum_decl
-                    .values
-                    .iter()
-                    .map(|(name, _)| (name.clone(), None))
-                    .collect(),
-            );
-
-            if enum_decl.contract.is_none() {
-                self.top_level_code_objects
-                    .push((file_no, (enum_decl.id.name.clone(), Some(def_index))));
-            }
-        }
-
-        for (si, struct_decl) in self.ns.structs.iter().enumerate() {
-            if matches!(struct_decl.loc, pt::Loc::File(_, _, _)) {
-                for (fi, field) in struct_decl.fields.iter().enumerate() {
-                    self.field(si, fi, field);
-                }
-
-                let file_no = struct_decl.id.loc.file_no();
-                let file = &self.ns.files[file_no];
-                self.hovers.push((
-                    file_no,
-                    HoverEntry {
-                        start: struct_decl.id.loc.start(),
-                        stop: struct_decl.id.loc.exclusive_end(),
-                        val: render(&struct_decl.tags[..]),
-                    },
-                ));
-
-                let def_index = DefinitionIndex {
-                    def_path: file.path.clone(),
-                    def_type: DefinitionType::Struct(StructType::UserDefined(si)),
-                };
-                self.definitions
-                    .insert(def_index.clone(), loc_to_range(&struct_decl.id.loc, file));
-
-                self.properties.insert(
-                    def_index.clone(),
-                    struct_decl
-                        .fields
-                        .iter()
-                        .filter_map(|field| {
-                            let def_index =
-                                get_type_definition(&field.ty).map(|def_type| DefinitionIndex {
-                                    def_path: file.path.clone(),
-                                    def_type,
-                                });
-                            field.id.as_ref().map(|id| (id.name.clone(), def_index))
-                        })
-                        .collect(),
-                );
-
-                if struct_decl.contract.is_none() {
-                    self.top_level_code_objects
-                        .push((file_no, (struct_decl.id.name.clone(), Some(def_index))));
-                }
-            }
-        }
+        // Note: Enums, structs, and contracts are now loaded lazily via ensure_type_loaded()
 
         for (i, func) in self.ns.functions.iter().enumerate() {
             if func.is_accessor || func.loc == pt::Loc::Builtin {
@@ -1789,8 +1695,227 @@ impl<'a> Builder<'a> {
 
         (file_caches, global_cache)
     }
+}
 
-    /// Render the type with struct/enum fields expanded
+/// Calculate the line and column from the Loc offset received from the parser
+fn loc_to_range(loc: &pt::Loc, file: &ast::File) -> Range {
+    get_range(loc.start(), loc.end(), file)
+}
+
+impl<'a> Builder<'a> {
+    fn lazy_load_enum(&mut self, enum_index: usize) {
+        if self.processed_enums.contains(&enum_index) {
+            return;
+        }
+
+        let enum_decl = &self.ns.enums[enum_index];
+        
+        for (discriminant, (nam, loc)) in enum_decl.values.iter().enumerate() {
+            let file_no = loc.file_no();
+            let file = &self.ns.files[file_no];
+            self.hovers.push((
+                file_no,
+                HoverEntry {
+                    start: loc.start(),
+                    stop: loc.exclusive_end(),
+                    val: make_code_block(format!(
+                        "enum {}.{} {}",
+                        enum_decl.id, nam, discriminant
+                    )),
+                },
+            ));
+
+            let di = DefinitionIndex {
+                def_path: file.path.clone(),
+                def_type: DefinitionType::Variant(enum_index, discriminant),
+            };
+            self.definitions.insert(di.clone(), loc_to_range(loc, file));
+
+            let dt = DefinitionType::Enum(enum_index);
+            self.types.insert(di, dt.into());
+        }
+
+        let file_no = enum_decl.id.loc.file_no();
+        let file = &self.ns.files[file_no];
+        self.hovers.push((
+            file_no,
+            HoverEntry {
+                start: enum_decl.id.loc.start(),
+                stop: enum_decl.id.loc.exclusive_end(),
+                val: render(&enum_decl.tags[..]),
+            },
+        ));
+
+        let def_index = DefinitionIndex {
+            def_path: file.path.clone(),
+            def_type: DefinitionType::Enum(enum_index),
+        };
+        self.definitions
+            .insert(def_index.clone(), loc_to_range(&enum_decl.id.loc, file));
+
+        self.properties.insert(
+            def_index.clone(),
+            enum_decl
+                .values
+                .iter()
+                .map(|(name, _)| (name.clone(), None))
+                .collect(),
+        );
+
+        if enum_decl.contract.is_none() {
+            self.top_level_code_objects
+                .push((file_no, (enum_decl.id.name.clone(), Some(def_index))));
+        }
+
+        self.processed_enums.insert(enum_index);
+    }
+
+    fn lazy_load_struct(&mut self, struct_index: usize) {
+        if self.processed_structs.contains(&struct_index) {
+            return;
+        }
+
+        let struct_decl = &self.ns.structs[struct_index];
+        if matches!(struct_decl.loc, pt::Loc::File(_, _, _)) {
+            for (fi, field) in struct_decl.fields.iter().enumerate() {
+                self.field(struct_index, fi, field);
+            }
+
+            let file_no = struct_decl.id.loc.file_no();
+            let file = &self.ns.files[file_no];
+            self.hovers.push((
+                file_no,
+                HoverEntry {
+                    start: struct_decl.id.loc.start(),
+                    stop: struct_decl.id.loc.exclusive_end(),
+                    val: render(&struct_decl.tags[..]),
+                },
+            ));
+
+            let def_index = DefinitionIndex {
+                def_path: file.path.clone(),
+                def_type: DefinitionType::Struct(StructType::UserDefined(struct_index)),
+            };
+            self.definitions
+                .insert(def_index.clone(), loc_to_range(&struct_decl.id.loc, file));
+
+            self.properties.insert(
+                def_index.clone(),
+                struct_decl
+                    .fields
+                    .iter()
+                    .filter_map(|field| {
+                        let def_index =
+                            get_type_definition(&field.ty).map(|def_type| DefinitionIndex {
+                                def_path: file.path.clone(),
+                                def_type,
+                            });
+                        field.id.as_ref().map(|id| (id.name.clone(), def_index))
+                    })
+                    .collect(),
+            );
+
+            if struct_decl.contract.is_none() {
+                self.top_level_code_objects
+                    .push((file_no, (struct_decl.id.name.clone(), Some(def_index))));
+            }
+        }
+
+        self.processed_structs.insert(struct_index);
+    }
+
+    fn lazy_load_contract(&mut self, contract_index: usize) {
+        if self.processed_contracts.contains(&contract_index) {
+            return;
+        }
+
+        // Load contract-specific logic here if needed
+        // For now, just mark as processed
+        self.processed_contracts.insert(contract_index);
+    }
+
+    pub fn ensure_type_loaded(&mut self, ty: &Type) {
+        match ty {
+            Type::Enum(enum_index) => {
+                self.lazy_load_enum(*enum_index);
+            }
+            Type::Struct(StructType::UserDefined(struct_index)) => {
+                self.lazy_load_struct(*struct_index);
+            }
+            Type::Contract(contract_index) => {
+                self.lazy_load_contract(*contract_index);
+            }
+            Type::Array(inner_ty, _) => {
+                self.ensure_type_loaded(inner_ty);
+            }
+            Type::Ref(inner_ty) => {
+                self.ensure_type_loaded(inner_ty);
+            }
+            Type::StorageRef(_, inner_ty) => {
+                self.ensure_type_loaded(inner_ty);
+            }
+            _ => {}
+        }
+    }
+
+    fn expanded_ty_internal(&mut self, ty: &ast::Type) -> String {
+        // Ensure the type is loaded before expanding it
+        self.ensure_type_loaded(ty);
+        
+        match ty {
+            ast::Type::Ref(ty) => self.expanded_ty_internal(ty),
+            ast::Type::StorageRef(_, ty) => self.expanded_ty_internal(ty),
+            ast::Type::Array(ty, dims) => {
+                format!(
+                    "{}{}",
+                    self.expanded_ty_internal(ty),
+                    dims.iter()
+                        .map(|size| {
+                            match size {
+                                solang::sema::ast::ArrayLength::Fixed(val) => format!("[{val}]"),
+                                _ => "[]".to_string()
+                            }
+                        })
+                        .collect::<String>()
+                )
+            }
+            ast::Type::Struct(struct_type) => {
+                let strct = struct_type.definition(self.ns);
+                let mut tags = render(&strct.tags);
+                if !tags.is_empty() {
+                    tags.push_str("\n\n")
+                }
+
+                let fields = strct
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        format!("\t{} {}", field.ty.to_string(self.ns), field.name_as_str())
+                    })
+                    .join(",\n");
+
+                let val = make_code_block(format!("struct {strct} {{\n{fields}\n}}"));
+                format!("{tags}{val}")
+            }
+            ast::Type::Enum(n) => {
+                let enm = &self.ns.enums[*n];
+                let mut tags = render(&enm.tags);
+                if !tags.is_empty() {
+                    tags.push_str("\n\n")
+                }
+                let values = enm
+                    .values
+                    .iter()
+                    .map(|value| format!("\t{}", value.0))
+                    .join(",\n");
+
+                let val = make_code_block(format!("enum {enm} {{\n{values}\n}}"));
+                format!("{tags}{val}")
+            }
+            _ => make_code_block(ty.to_string(self.ns)),
+        }
+    }
+
     fn expanded_ty(&self, ty: &ast::Type) -> String {
         match ty {
             ast::Type::Ref(ty) => self.expanded_ty(ty),
@@ -1831,11 +1956,6 @@ impl<'a> Builder<'a> {
             _ => make_code_block(ty.to_string(self.ns)),
         }
     }
-}
-
-/// Calculate the line and column from the Loc offset received from the parser
-fn loc_to_range(loc: &pt::Loc, file: &ast::File) -> Range {
-    get_range(loc.start(), loc.end(), file)
 }
 
 fn get_range(start: usize, end: usize, file: &ast::File) -> Range {

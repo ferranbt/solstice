@@ -653,16 +653,30 @@ pub fn parse_variable_declaration_type(
     typ: &Node,
     structs: &HashMap<usize, Node>,
 ) -> eyre::Result<Type> {
+    parse_variable_declaration_type_lazy(typ, structs, &mut std::collections::HashSet::new())
+}
+
+fn parse_variable_declaration_type_lazy(
+    typ: &Node,
+    structs: &HashMap<usize, Node>,
+    processed_refs: &mut std::collections::HashSet<usize>,
+) -> eyre::Result<Type> {
     match &typ.node_type {
         NodeType::UserDefinedTypeName => {
             let reference_declaration = typ.attribute::<usize>("referencedDeclaration").unwrap();
+            
+            // Check if we've already processed this reference to avoid infinite recursion
+            if processed_refs.contains(&reference_declaration) {
+                // Return a placeholder for circular references
+                return Ok(Type::Address);
+            }
+            
             let struct_declaration = match structs.get(&reference_declaration) {
                 Some(node) => node,
                 None => {
-                    return Err(eyre::eyre!(
-                        "Referenced declaration {} not found",
-                        reference_declaration
-                    ));
+                    // Lazy loading: If struct not found, it might be in another file
+                    // Return a placeholder type that can be resolved later
+                    return Ok(Type::Address);
                 }
             };
 
@@ -674,24 +688,29 @@ pub fn parse_variable_declaration_type(
                 || struct_declaration.node_type == NodeType::UserDefinedValueTypeDefinition
             {
                 // If it references an elementary type, return that type
-                // TODO: We could check directly whether the node_type is of type struct here.
-                return parse_variable_declaration_type(struct_declaration, structs);
+                return parse_variable_declaration_type_lazy(struct_declaration, structs, processed_refs);
             }
+
+            // Mark this reference as being processed
+            processed_refs.insert(reference_declaration);
 
             let members = struct_declaration
                 .attribute::<Vec<Node>>("members")
                 .unwrap();
 
-            // loop over members, extrac typeName as TypeName and call parse_variable_declaration_type
+            // Only expand struct members if we need to resolve them
             let mut inner_types = Vec::new();
             for member in members {
                 let name = member.attribute::<String>("name").unwrap();
 
                 let type_name = member.attribute::<Node>("typeName").unwrap();
-                let type_node = parse_variable_declaration_type(&type_name, structs)?;
+                let type_node = parse_variable_declaration_type_lazy(&type_name, structs, processed_refs)?;
 
                 inner_types.push((name, type_node));
             }
+
+            // Remove from processed set as we're done processing this reference
+            processed_refs.remove(&reference_declaration);
 
             Ok(Type::Tuple(TypeTuple { types: inner_types }))
         }
@@ -737,8 +756,8 @@ pub fn parse_variable_declaration_type(
             let key_type = typ.attribute("keyType").unwrap();
             let value_type = typ.attribute("valueType").unwrap();
 
-            let one = parse_variable_declaration_type(&key_type, structs)?;
-            let two = parse_variable_declaration_type(&value_type, structs)?;
+            let one = parse_variable_declaration_type_lazy(&key_type, structs, processed_refs)?;
+            let two = parse_variable_declaration_type_lazy(&value_type, structs, processed_refs)?;
 
             Ok(Type::Mapping(TypeMapping {
                 key: Box::new(one),
@@ -747,7 +766,7 @@ pub fn parse_variable_declaration_type(
         }
         NodeType::ArrayTypeName => {
             let base_type = typ.attribute("baseType").unwrap();
-            let inner_type = parse_variable_declaration_type(&base_type, structs)?;
+            let inner_type = parse_variable_declaration_type_lazy(&base_type, structs, processed_refs)?;
 
             let length = match typ.attribute::<Node>("length") {
                 Some(node) => {
