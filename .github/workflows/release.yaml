@@ -18,7 +18,7 @@ jobs:
       - name: Extract version
         run: echo "VERSION=$(echo ${GITHUB_REF#refs/tags/})" >> $GITHUB_OUTPUT
         id: extract_version
-      - name: Validate version matches Cargo.toml
+      - name: Validate version matches Cargo.toml and package.json
         run: |
           TAG_VERSION=${{ steps.extract_version.outputs.VERSION }}
           if [[ ! "$TAG_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -29,6 +29,11 @@ jobs:
           TAG_VERSION_WITHOUT_V=${TAG_VERSION#v}
           if [ "$CARGO_VERSION" != "$TAG_VERSION_WITHOUT_V" ]; then
             echo "Version mismatch: Cargo.toml has $CARGO_VERSION but tag is $TAG_VERSION_WITHOUT_V"
+            exit 1
+          fi
+          PACKAGE_JSON_VERSION=$(jq -r '.version' package.json)
+          if [ "$PACKAGE_JSON_VERSION" != "$TAG_VERSION_WITHOUT_V" ]; then
+            echo "Version mismatch: package.json has $PACKAGE_JSON_VERSION but tag is $TAG_VERSION_WITHOUT_V"
             exit 1
           fi
     outputs:
