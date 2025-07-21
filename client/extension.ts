@@ -259,28 +259,75 @@ async function getServer(): Promise<string> {
   }
 
   // Try to find the latest release version of the 'solstice' executable
-  let latestSolsticeVersion = await getLatestReleaseVersion();
-  consoleLog('Remote solstice version', latestSolsticeVersion);
+  let latestVersion = await getLatestReleaseVersion();
+  consoleLog('Remote solstice version', latestVersion);
 
   // Try to find the 'solstice' executable in the $HOME/.solstice directory
   const home = os.homedir();
 
   const solsticePath = path.join(home, '.solstice', 'solstice');
   if (executableFileExists(solsticePath)) {
-    consoleLog('Using server path from $HOME/.solstice/solstice');
-    // TODO: if the version is not the latest, ask whether to update
-    return solsticePath;
+    return await checkAndUpdateIfNeeded(solsticePath, latestVersion);
   }
 
-  const updateMsg = `Solstice binary is not found. Would you like to download it? (version: ${latestSolsticeVersion})`;
-  const choices = ['Yes', 'No'];
-  const selected = await vscode.window.showInformationMessage(updateMsg, ...choices);
-  if (selected === 'Yes') {
-    return await downloadSolsticeRelease(solsticePath, latestSolsticeVersion);
+  // No installation found - offer to install
+  return await promptAndInstall(solsticePath, latestVersion);
+}
+
+async function checkAndUpdateIfNeeded(solsticePath: string, latestVersion: string): Promise<string> {
+  if (!latestVersion) return solsticePath; // Can't check without latest version
+
+  try {
+    const currentVersion = getSolsticeVersion(solsticePath);
+
+    if (isNewerVersion(latestVersion, currentVersion)) {
+      const action = await vscode.window.showInformationMessage(
+        `Solstice update available: ${currentVersion} → ${latestVersion}`,
+        'Update', 'Skip'
+      );
+
+      if (action === 'Update') {
+        return await downloadSolsticeRelease(solsticePath, latestVersion);
+      }
+    }
+  } catch (error) {
+    consoleLog('Version check failed, using existing binary:', error);
   }
 
-  vscode.window.showErrorMessage("Solstice binary is not found. Please install it manually and add it to your PATH");
-  throw new Error("Solstice binary is not found. Please install it manually and add it to your PATH");
+  return solsticePath;
+}
+
+async function promptAndInstall(solsticePath: string, latestVersion: string): Promise<string> {
+  const action = await vscode.window.showInformationMessage(
+    `Install Solstice ${latestVersion}?`,
+    'Install', 'Cancel'
+  );
+
+  if (action === 'Install') {
+    return await downloadSolsticeRelease(solsticePath, latestVersion);
+  }
+
+  const error = "Solstice installation cancelled";
+  vscode.window.showErrorMessage(error);
+  throw new Error(error);
+}
+
+function isNewerVersion(latest: string, current: string): boolean {
+  // Remove 'v' prefix if present and compare
+  const cleanLatest = latest.replace(/^v/, '');
+  const cleanCurrent = current.replace(/^v/, '');
+
+  const latestParts = cleanLatest.split('.').map(Number);
+  const currentParts = cleanCurrent.split('.').map(Number);
+
+  for (let i = 0; i < 3; i++) { // Assume semantic versioning (major.minor.patch)
+    const l = latestParts[i] || 0;
+    const c = currentParts[i] || 0;
+    if (l > c) return true;
+    if (l < c) return false;
+  }
+
+  return false; // Versions are equal
 }
 
 function executableFileExists(filePath: string): boolean {
