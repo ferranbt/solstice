@@ -6200,7 +6200,7 @@ dependencies = [
 
 [[package]]
 name = "solstice"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alloy-contract",
  "alloy-node-bindings",
@@ -6225,7 +6225,7 @@ dependencies = [
  "getrandom 0.2.16",
  "hex",
  "im-rc",
- "itertools 0.13.0",
+ "itertools 0.10.5",
  "log",
  "lsp-types 0.97.0",
  "num-traits",

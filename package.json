@@ -3,7 +3,7 @@
   "displayName": "Solstice",
   "description": "Solc Language Server and Debugger",
   "license": "MIT",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "categories": [],
   "keywords": [
     "language-server",
