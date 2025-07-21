@@ -1164,7 +1164,128 @@ impl<'a> Builder<'a> {
     /// This includes hover messages, locations where code objects are declared and used
     /// Uses lazy loading to only process AST nodes when their types need resolution
     pub fn build(mut self) -> (Vec<FileCache>, GlobalCache) {
-        // Note: Enums, structs, and contracts are now loaded lazily via ensure_type_loaded()
+        // Note: Enums and structs are now loaded lazily, but contracts are still processed eagerly
+        // as they're needed for debugger functionality
+        
+        for (ci, contract) in self.ns.contracts.iter().enumerate() {
+            for base in &contract.bases {
+                let file_no = base.loc.file_no();
+                self.hovers.push((
+                    file_no,
+                    HoverEntry {
+                        start: base.loc.start(),
+                        stop: base.loc.exclusive_end(),
+                        val: make_code_block(format!(
+                            "contract {}",
+                            self.ns.contracts[base.contract_no].id
+                        )),
+                    },
+                ));
+                self.references.push((
+                    file_no,
+                    ReferenceEntry {
+                        start: base.loc.start(),
+                        stop: base.loc.exclusive_end(),
+                        val: DefinitionIndex {
+                            def_path: Default::default(),
+                            def_type: DefinitionType::Contract(base.contract_no),
+                        },
+                    },
+                ));
+            }
+
+            for (i, variable) in contract.variables.iter().enumerate() {
+                let symtable = symtable::Symtable::default();
+                self.contract_variable(variable, &symtable, Some(ci), i);
+            }
+
+            let file_no = contract.loc.file_no();
+            let file = &self.ns.files[file_no];
+            self.hovers.push((
+                file_no,
+                HoverEntry {
+                    start: contract.id.loc.start(),
+                    stop: contract.id.loc.exclusive_end(),
+                    val: render(&contract.tags[..]),
+                },
+            ));
+
+            let contract_def_index = DefinitionIndex {
+                def_path: file.path.clone(),
+                def_type: DefinitionType::Contract(ci),
+            };
+
+            self.definitions.insert(
+                contract_def_index.clone(),
+                loc_to_range(&contract.id.loc, file),
+            );
+
+            self.implementations.insert(
+                contract_def_index.clone(),
+                contract
+                    .all_functions
+                    .values()
+                    .map(|func_id| DefinitionIndex {
+                        def_path: file.path.clone(),
+                        def_type: DefinitionType::Function(*func_id),
+                    })
+                    .collect(),
+            );
+
+            let mut funcs = Vec::new();
+            let mut variables = Vec::new();
+            let mut events = Vec::new();
+
+            for (_, func_id) in &contract.all_functions {
+                let func = &self.ns.functions[*func_id];
+                funcs.push((func.id.name.clone(), Some(DefinitionType::Function(*func_id))));
+            }
+
+            for (_i, variable) in contract.variables.iter().enumerate() {
+                variables.push((
+                    variable.name.clone(),
+                    Some(DefinitionType::Variable(ci)),
+                ));
+            }
+
+            for event_id in &contract.emits_events {
+                let event = &self.ns.events[*event_id];
+                events.push((event.id.name.clone(), Some(DefinitionType::Event(*event_id))));
+            }
+
+            let contract_contents = funcs
+                .into_iter()
+                .chain(variables)
+                .chain(events)
+                .map(|(name, dt)| {
+                    let def_index = dt.map(|def_type| DefinitionIndex {
+                        def_path: file.path.clone(),
+                        def_type,
+                    });
+                    (name, def_index)
+                });
+
+            self.properties.insert(
+                contract_def_index.clone(),
+                contract_contents.clone().collect(),
+            );
+
+            self.scopes.push((
+                file_no,
+                ScopeEntry {
+                    start: contract.loc.start(),
+                    stop: contract.loc.exclusive_end(),
+                    val: contract_contents.collect(),
+                },
+            ));
+
+            // Contracts can't be defined within other contracts.
+            // So all the contracts are top level objects in a file.
+            self.top_level_code_objects.push((
+                file_no,
+                (contract.id.name.clone(), Some(contract_def_index)),
+            ));
+        }
 
         for (i, func) in self.ns.functions.iter().enumerate() {
             if func.is_accessor || func.loc == pt::Loc::Builtin {
