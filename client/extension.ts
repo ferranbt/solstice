@@ -275,10 +275,9 @@ async function getServer(): Promise<string> {
 }
 
 async function checkAndUpdateIfNeeded(solsticePath: string, latestVersion: string): Promise<string> {
-  if (!latestVersion) return solsticePath; // Can't check without latest version
-
   try {
     const currentVersion = getSolsticeVersion(solsticePath);
+    consoleLog('Current installed solstice version:', currentVersion);
 
     if (isNewerVersion(latestVersion, currentVersion)) {
       const action = await vscode.window.showInformationMessage(
@@ -345,10 +344,11 @@ function executableFileExists(filePath: string): boolean {
 
 // getSolsticeVersion executes the solstice executable with the --version flag and returns the version
 function getSolsticeVersion(filePath: string): string {
-  const version = execSync(`${filePath} --version`);
+  let version = execSync(`${filePath} --version`).toString();
+  version = version.replace(/\s/g, '').trim(); // Remove whitespace and newlines
 
   // parse the version from the output
-  const versionMatch = version.toString().match(/^solstice (\d+\.\d+\.\d+)$/);
+  const versionMatch = version.toString().match(/^solstice(\d+\.\d+\.\d+)$/);
   if (versionMatch) {
     return versionMatch[1];
   }
