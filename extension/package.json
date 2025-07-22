@@ -205,21 +205,19 @@
       }
     ]
   },
-  "type": "module",
   "scripts": {
-    "vscode:prepublish": "npm run esbuild-base -- --minify",
+    "vscode:prepublish": "npm run build -- --minify",
     "test-compile": "tsc -p ./",
     "compile": "cross-env NODE_ENV=production tsc -b",
     "watch": "rm -rf dist && tsc -b -w",
-    "lint": "eslint client --ext ts",
+    "lint": "eslint src --ext ts",
     "pretest": "npm run compile && npm run lint",
     "test": "node ./out/test/runTest.js",
-    "esbuild-base": "esbuild ./client/extension.ts --bundle --outfile=out/main.js --external:vscode --format=cjs --platform=node",
-    "build": "webpack --config webpack.config.js",
+    "build": "esbuild ./src/extension.ts --bundle --outfile=out/main.js --external:vscode --format=cjs --platform=node",
     "package": "vsce package --no-dependencies",
     "publish": "vsce publish --no-dependencies",
-    "format": "prettier --write \"client/**/*.ts\"",
-    "format:check": "prettier --check \"client/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\""
   },
   "devDependencies": {
     "@types/glob": "^7.1.3",
