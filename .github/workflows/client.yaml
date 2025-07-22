@@ -9,6 +9,9 @@ on:
 jobs:
   lint-and-format:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./extension
     
     steps:
     - name: Checkout code
@@ -19,13 +22,14 @@ jobs:
       with:
         node-version: '20'
         cache: 'npm'
-        
+        cache-dependency-path: './extension/package-lock.json'
+
     - name: Install dependencies
       run: npm ci
-      
+
     - name: Run ESLint
       run: npm run lint
-      
+
     - name: Check Prettier formatting
       run: npm run format:check
       
