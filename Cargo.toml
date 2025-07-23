@@ -45,9 +45,8 @@ rustc-hash = "1.1"
 semver = "1"
 dap = "0.4.1-alpha1"
 clap = { version = "4.5.16", features = ["derive"] }
-solang-parser = { git = "http://github.com/hyperledger-solang/solang", rev = "fa338eba3b0e546ea2351c080e34252f0bf134a7" }
-solang = { git = "http://github.com/hyperledger-solang/solang", rev = "fa338eba3b0e546ea2351c080e34252f0bf134a7", default-features = false }
-forge-fmt = { git = "http://github.com/hyperledger-solang/solang", rev = "fa338eba3b0e546ea2351c080e34252f0bf134a7", default-features = false }
+solang-parser = { git = "http://github.com/ferranbt/solang", branch = "solstice" }
+solang = { git = "http://github.com/ferranbt/solang", branch = "solstice", default-features = false }
 anstream = "0.6.18"
 arbitrary = { version = "1", features = ["derive"] }
 getrandom = "0.2"
