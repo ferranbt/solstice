@@ -6,12 +6,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solang::sema::ast;
 use solang::{parse_and_resolve, Target};
+use solar_interface::config::ImportRemapping;
 use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::request::GotoTypeDefinitionResponse;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tracer::{execute_command, generate_trace};
+
+use solar_interface::{diagnostics::EmittedDiagnostics, Session};
+use solar_sema::{thread_local::ThreadLocal, ParsingContext};
 
 use crate::builder::DefinitionType;
 use crate::builder::{Builder, Files, GlobalCache};
@@ -571,6 +575,41 @@ impl Backend {
             .unwrap();
 
         tracing::debug!("workspace_lib ...: {}", workspace_lib.to_str().unwrap());
+
+        {
+            // using solar to parse
+            let paths = [uri.to_file_path().unwrap()];
+
+            // Create a new session with a buffer emitter.
+            // This is required to capture the emitted diagnostics and to return them at the end.
+            let sess = Session::builder()
+                .with_buffer_emitter(solar_interface::ColorChoice::Auto)
+                .build();
+
+            // Enter the context and parse the file.
+            // Counter will be parsed, even if not explicitly provided, since it is a dependency.
+            let _ = sess.enter_parallel(|| -> solar_interface::Result<()> {
+                // Set up the parser.
+
+                let mut pcx = ParsingContext::new(&sess);
+                pcx.load_files(paths)?;
+                pcx.file_resolver.add_import_remapping(ImportRemapping {
+                    context: "".to_string(),
+                    prefix: "forge-std".to_string(),
+                    path: workspace_lib.to_string_lossy().to_string(),
+                });
+
+                let hir_arena = ThreadLocal::new();
+                if let Some(gcx) = pcx.parse_and_lower(&hir_arena)? {
+                    let gcx = gcx.get();
+                }
+
+                Ok(())
+            });
+
+            let diags = sess.emitted_errors();
+            tracing::info!("[solar] Emitted diagnostics: {:#?}", diags);
+        }
 
         let mut resolver = FileResolver::default();
         for (path, contents) in &self.files.lock().await.text_buffers {

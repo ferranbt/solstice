@@ -22,7 +22,7 @@ serde = { version = "1.0", features = ["derive"] }
 dashmap = "5.1.0"
 log = "0.4.14"
 im-rc = "15.0.0"
-foundry-compilers = "0.17.3"
+foundry-compilers = "0.18.0"
 revm-inspectors = { version = "0.24.0", features = ["serde"] }
 alloy-primitives = "1.2.0"
 alloy-sol-types = "1.2.0"
@@ -61,6 +61,12 @@ thiserror = "1.0"
 slice-group-by = "0.3.1"
 shellexpand = "3.1.1"
 pprof = { version = "0.15.0", features = ["flamegraph", "frame-pointer", "prost-codec"] }
+
+solar-ast = { version = "=0.1.5", default-features = false }
+solar-parse = { version = "=0.1.5", default-features = false }
+solar-interface = { version = "=0.1.5", default-features = false }
+solar-sema = { version = "=0.1.5", default-features = false }
+solar-data-structures = { version = "=0.1.5", default-features = false }
 
 [build-dependencies]
 built = { version = "0.7.1", features = ["git2", "chrono"] }
