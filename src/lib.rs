@@ -2,6 +2,7 @@ use builder::DefinitionIndex;
 use built_info::PKG_VERSION;
 use clap::{Args, Parser, Subcommand};
 use debugger::DapDebugger;
+use forge_fmt::{fmt, FormatterConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solang::sema::ast;
@@ -106,6 +107,7 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
         })
@@ -153,7 +155,7 @@ impl LanguageServer for Backend {
                         .into_iter()
                         .fold(text_buf.clone(), update_file_contents);
                 }
-                self.parse_file(uri).await;
+                // self.parse_file(uri).await;
             }
             Err(_) => {
                 self.client
@@ -164,6 +166,8 @@ impl LanguageServer for Backend {
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        tracing::info!("Saving file");
+
         let uri = params.text_document.uri;
 
         if let Some(text) = params.text {
@@ -174,7 +178,8 @@ impl LanguageServer for Backend {
             }
         }
 
-        self.parse_file(uri).await;
+        // self.parse_file(uri).await;
+        tracing::info!("File saved");
     }
 
     async fn did_close(&self, _: DidCloseTextDocumentParams) {
@@ -305,6 +310,53 @@ impl LanguageServer for Backend {
         };
 
         Ok(locations)
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        tracing::info!("Formatting requested for {:?}", params.text_document.uri);
+
+        // get parse tree for the input file
+        let uri = params.text_document.uri;
+        let source_path = uri.to_file_path().map_err(|_| Error {
+            code: ErrorCode::InvalidRequest,
+            message: format!("Received invalid URI: {uri}").into(),
+            data: None,
+        })?;
+        let start = std::time::Instant::now();
+
+        let source = std::fs::read_to_string(source_path).map_err(|err| Error {
+            code: ErrorCode::InternalError,
+            message: format!("Failed to read file: {uri}").into(),
+            data: Some(Value::String(format!("{err:?}"))),
+        })?;
+
+        tracing::info!("Reading file: {} took {:?}", uri, start.elapsed());
+        let start = std::time::Instant::now();
+
+        let source_formatted = fmt(&source).map_err(|err| Error {
+            code: ErrorCode::InternalError,
+            message: format!("Failed to format file: {uri}").into(),
+            data: Some(Value::String(format!("{err:?}"))),
+        })?;
+
+        tracing::info!("Formatting file: {} took {:?}", uri, start.elapsed());
+
+        // create a `TextEdit` instance that replaces the contents of the file with the formatted text
+        let text_edit = TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: u32::MAX,
+                    character: u32::MAX,
+                },
+            },
+            new_text: source_formatted,
+        };
+
+        Ok(Some(vec![text_edit]))
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
