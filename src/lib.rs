@@ -18,6 +18,8 @@ use crate::builder::{Builder, Files, GlobalCache};
 use crate::tracer::{DebugTrace, Forge};
 use pprof::protos::Message;
 use std::io::Write;
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 use solang::file_resolver::FileResolver;
 use solang_parser::pt;
@@ -43,9 +45,10 @@ mod tracer;
 
 struct Backend {
     client: Client,
-    files: Files,
+    files: Arc<Files>,
     workspace: Mutex<String>,
-    global_cache: Mutex<GlobalCache>,
+    global_cache: Arc<Mutex<GlobalCache>>,
+    tx: OnceLock<tokio::sync::mpsc::Sender<ParseRequest>>,
 }
 
 #[derive(Debug)]
@@ -77,7 +80,14 @@ impl LanguageServer for Backend {
         let workspace_path = workspace.path().to_string();
 
         let mut workspace_guard = self.workspace.lock().await;
-        *workspace_guard = workspace_path;
+        *workspace_guard = workspace_path.clone();
+
+        self.tx.get_or_init(|| {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            self.spawn_compiler_routine(workspace_path, rx);
+
+            tx
+        });
 
         Ok(InitializeResult {
             server_info: None,
@@ -128,7 +138,7 @@ impl LanguageServer for Backend {
             Ok(path) => {
                 self.files
                     .update_text_file(&path, params.text_document.text);
-                self.parse_file(uri).await;
+                self.parse_file_2(uri, true).await;
             }
             Err(_) => {
                 self.client
@@ -144,7 +154,7 @@ impl LanguageServer for Backend {
         match uri.to_file_path() {
             Ok(path) => {
                 self.files.update_partial_text_file(&path, params);
-                self.parse_file(uri).await;
+                self.parse_file_2(uri, false).await;
             }
             Err(_) => {
                 self.client
@@ -163,7 +173,7 @@ impl LanguageServer for Backend {
             }
         }
 
-        self.parse_file(uri).await;
+        self.parse_file_2(uri, true).await;
     }
 
     async fn did_close(&self, _: DidCloseTextDocumentParams) {
@@ -400,6 +410,11 @@ impl LanguageServer for Backend {
 
 const TEMP_FORGE_DUMP_PATH: &str = "/tmp/debug_trace.json";
 
+struct ParseRequest {
+    url: Url,
+    response_tx: tokio::sync::oneshot::Sender<()>,
+}
+
 impl Backend {
     async fn send_log(&self, channel: String, message: String) {
         let params = LogParams { channel, message };
@@ -505,7 +520,142 @@ impl Backend {
         Ok(None)
     }
 
-    async fn parse_file(&self, uri: Url) {
+    async fn parse_file_2(&self, uri: Url, wait: bool) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let request = ParseRequest {
+            url: uri.clone(),
+            response_tx: tx,
+        };
+
+        if let Some(sender) = self.tx.get() {
+            if let Err(e) = sender.send(request).await {
+                tracing::error!("Failed to send parse request for: {}: {}", uri, e);
+                return;
+            }
+        } else {
+            tracing::error!("Compiler routine not initialized, cannot parse file");
+            return;
+        }
+
+        // Wait for the response
+        if wait {
+            let _ = rx.await;
+        }
+    }
+
+    fn spawn_compiler_routine(
+        &self,
+        workspace: String,
+        mut rx: tokio::sync::mpsc::Receiver<ParseRequest>,
+    ) {
+        let files = Arc::clone(&self.files);
+        let global_cache = Arc::clone(&self.global_cache);
+        let client = self.client.clone();
+
+        tracing::info!("Compiler spawning task started, workspace: {}", workspace);
+
+        let workspace_lib = PathBuf::from(&*workspace)
+            .join("lib/forge-std/src")
+            .canonicalize()
+            .unwrap();
+
+        tokio::spawn(async move {
+            while let Some(req) = rx.recv().await {
+                tracing::info!("Received parse request for: {}", req.url);
+
+                let uri = req.url.clone();
+                let workspace_lib = workspace_lib.clone();
+
+                let mut resolver = FileResolver::default();
+                for entry in files.text_buffers.iter() {
+                    let path = entry.key();
+                    let contents = entry.value().clone();
+
+                    resolver.set_file_contents(path.to_str().unwrap(), contents);
+                }
+                if let Ok(path) = uri.to_file_path() {
+                    let dir = path.parent().unwrap();
+                    resolver.add_import_path(dir);
+
+                    // Add the lib path to import all the libraries from Forge.
+                    resolver.add_import_map("forge-std".into(), workspace_lib);
+
+                    let mut diags = Vec::new();
+                    let os_str = path.file_name().unwrap();
+
+                    let ns = parse_and_resolve(os_str, &mut resolver, Target::EVM);
+
+                    diags.extend(ns.diagnostics.iter().filter_map(|diag| {
+                        if diag.loc.file_no() != ns.top_file_no() {
+                            // The first file is the one we wanted to parse; others are imported
+                            return None;
+                        }
+
+                        let severity = match diag.level {
+                            ast::Level::Info => Some(DiagnosticSeverity::INFORMATION),
+                            ast::Level::Warning => Some(DiagnosticSeverity::WARNING),
+                            ast::Level::Error => Some(DiagnosticSeverity::ERROR),
+                            ast::Level::Debug => {
+                                return None;
+                            }
+                        };
+
+                        let related_information = if diag.notes.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                diag.notes
+                                    .iter()
+                                    .map(|note| DiagnosticRelatedInformation {
+                                        message: note.message.to_string(),
+                                        location: Location {
+                                            uri: Url::from_file_path(
+                                                &ns.files[note.loc.file_no()].path,
+                                            )
+                                            .unwrap(),
+                                            range: loc_to_range(
+                                                &note.loc,
+                                                &ns.files[ns.top_file_no()],
+                                            ),
+                                        },
+                                    })
+                                    .collect(),
+                            )
+                        };
+
+                        let range = loc_to_range(&diag.loc, &ns.files[ns.top_file_no()]);
+
+                        Some(Diagnostic {
+                            range,
+                            message: diag.message.to_string(),
+                            severity,
+                            related_information,
+                            ..Default::default()
+                        })
+                    }));
+
+                    let res = client.publish_diagnostics(uri, diags, None);
+                    let (file_caches, sub_global_cache) = Builder::new(&ns).build();
+
+                    for (f, c) in ns.files.iter().zip(file_caches.into_iter()) {
+                        if f.cache_no.is_some() {
+                            files.caches.insert(f.path.clone(), c);
+                        }
+                    }
+
+                    let mut gc = global_cache.lock().await;
+                    gc.extend(sub_global_cache);
+
+                    res.await;
+
+                    // notify that the compilation routine is done
+                    let _ = req.response_tx.send(());
+                }
+            }
+        });
+    }
+
+    async fn parse_file_3(&self, uri: Url) {
         let workspace = self.workspace.lock().await;
         tracing::debug!("workspace in parse file: {}", workspace);
 
@@ -730,9 +880,10 @@ impl Cli {
             Commands::Server(args) => {
                 let (service, socket) = LspService::build(|client| Backend {
                     client,
-                    files: Default::default(),
+                    files: Arc::new(Default::default()),
                     workspace: Mutex::new(String::new()),
-                    global_cache: Mutex::new(Default::default()),
+                    global_cache: Arc::new(Mutex::new(Default::default())),
+                    tx: OnceLock::new(),
                 })
                 .finish();
 
