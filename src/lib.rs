@@ -2,6 +2,7 @@ use builder::DefinitionIndex;
 use built_info::PKG_VERSION;
 use clap::{Args, Parser, Subcommand};
 use debugger::DapDebugger;
+use forge_fmt::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solang::sema::ast;
@@ -116,6 +117,7 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
         })
@@ -165,6 +167,8 @@ impl LanguageServer for Backend {
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        tracing::info!("Saving file");
+
         let uri = params.text_document.uri;
 
         if let Some(text) = params.text {
@@ -308,6 +312,55 @@ impl LanguageServer for Backend {
         };
 
         Ok(locations)
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        tracing::info!("Formatting requested for {:?}", params.text_document.uri);
+
+        // get parse tree for the input file
+        let uri = params.text_document.uri;
+        let source_path = uri.to_file_path().map_err(|_| Error {
+            code: ErrorCode::InvalidRequest,
+            message: format!("Received invalid URI: {uri}").into(),
+            data: None,
+        })?;
+
+        let source = self
+            .files
+            .text_buffers
+            .get(&source_path)
+            .ok_or_else(|| Error {
+                code: ErrorCode::InvalidRequest,
+                message: format!("File not found: {uri}").into(),
+                data: None,
+            })?;
+
+        let source_formatted = match fmt(&source) {
+            Ok(formatted) => formatted,
+            Err(e) => {
+                // This most likely is a syntax error on the user part. If we were to return an error
+                // it would show up as a modal window in the editor, which is not ideal.
+                tracing::debug!("Failed to format file: {}: {}", uri, e);
+                return Ok(None);
+            }
+        };
+
+        // create a `TextEdit` instance that replaces the contents of the file with the formatted text
+        let text_edit = TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: u32::MAX,
+                    character: u32::MAX,
+                },
+            },
+            new_text: source_formatted,
+        };
+
+        Ok(Some(vec![text_edit]))
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
