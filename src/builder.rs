@@ -772,11 +772,11 @@ impl<'a> Builder<'a> {
             ast::Expression::ConstantVariable { loc, ty, contract_no, var_no } => {
                 let (contract, name) = if let Some(contract_no) = contract_no {
                     let contract = format!("{}.", self.ns.contracts[*contract_no].id);
-                    let name = &self.ns.contracts[*contract_no].variables[*var_no].name;
+                    let name = &self.ns.contracts[*contract_no].variables[*var_no].id.name;
                     (contract, name)
                 } else {
                     let contract = String::new();
-                    let name = &self.ns.constants[*var_no].name;
+                    let name = &self.ns.constants[*var_no].id.name;
                     (contract, name)
                 };
                 let constant = self
@@ -809,7 +809,7 @@ impl<'a> Builder<'a> {
             }
             ast::Expression::StorageVariable { loc, ty, contract_no, var_no } => {
                 let contract = &self.ns.contracts[*contract_no];
-                let name = &contract.variables[*var_no].name;
+                let name = &contract.variables[*var_no].id.name;
                 let val = format!("{} {}.{}", ty.to_string(self.ns), contract.id, name);
                 self.hovers.push((
                     loc.file_no(),
@@ -1138,7 +1138,7 @@ impl<'a> Builder<'a> {
         let val = make_code_block(format!(
             "{} {}",
             variable.ty.to_string(self.ns),
-            variable.name
+            variable.id.name
         ));
 
         if let Some(expr) = &variable.initializer {
@@ -1151,7 +1151,7 @@ impl<'a> Builder<'a> {
             file_no,
             HoverEntry {
                 start: variable.loc.start(),
-                stop: variable.loc.start() + variable.name.len(),
+                stop: variable.loc.start() + variable.id.name.len(),
                 val: format!("{tags}{val}"),
             },
         ));
@@ -1161,7 +1161,7 @@ impl<'a> Builder<'a> {
             def_type: DefinitionType::NonLocalVariable(contract_no, var_no),
         };
         self.definitions
-            .insert(di.clone(), loc_to_range(&variable.loc, file));
+            .insert(di.clone(), loc_to_range(&variable.id.loc, file));
         if let Some(dt) = get_type_definition(&variable.ty) {
             self.types.insert(di, dt.into());
         }
@@ -1170,7 +1170,7 @@ impl<'a> Builder<'a> {
             self.top_level_code_objects.push((
                 file_no,
                 (
-                    variable.name.clone(),
+                    variable.id.name.clone(),
                     get_type_definition(&variable.ty).map(|dt| dt.into()),
                 ),
             ))
@@ -1649,7 +1649,7 @@ impl<'a> Builder<'a> {
 
             let variables = contract.variables.iter().map(|var| {
                 (
-                    var.name.clone(),
+                    var.id.name.clone(),
                     get_type_definition(&var.ty).map(|def_type| def_type.into()),
                 )
             });
