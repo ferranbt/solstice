@@ -7,7 +7,7 @@ import {Vm} from "./Vm.sol";
 abstract contract StdAssertions {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    event log(value_storage_2);
+    event log(string);
     event logs(bytes);
 
     event log_address(address);
