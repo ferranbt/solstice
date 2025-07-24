@@ -83,7 +83,7 @@ impl LanguageServer for Backend {
         *workspace_guard = workspace_path.clone();
 
         self.tx.get_or_init(|| {
-            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let (tx, rx) = tokio::sync::mpsc::channel(5);
             self.spawn_compiler_routine(workspace_path, rx);
 
             tx
@@ -647,6 +647,10 @@ impl Backend {
                     gc.extend(sub_global_cache);
 
                     res.await;
+
+                    // ask again for code lens because now we do it async so the system might be asking for
+                    // code lens before the compilation is done
+                    let _ = client.code_lens_refresh().await;
 
                     // notify that the compilation routine is done
                     let _ = req.response_tx.send(());
