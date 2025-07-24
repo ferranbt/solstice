@@ -5,7 +5,7 @@ contract FooTest is Test {
     struct Example {
         uint256 value_storage;
     }
-
+    
     uint256 value_storage;
     Example[2][] second_storage;
 
