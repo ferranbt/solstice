@@ -18,7 +18,6 @@ use crate::builder::{Builder, Files, GlobalCache};
 use crate::tracer::{DebugTrace, Forge};
 use pprof::protos::Message;
 use std::io::Write;
-use std::sync::Arc;
 
 use solang::file_resolver::FileResolver;
 use solang_parser::pt;
@@ -44,7 +43,7 @@ mod tracer;
 
 struct Backend {
     client: Client,
-    files: Arc<Files>,
+    files: Files,
     workspace: Mutex<String>,
     global_cache: Mutex<GlobalCache>,
 }
@@ -731,7 +730,7 @@ impl Cli {
             Commands::Server(args) => {
                 let (service, socket) = LspService::build(|client| Backend {
                     client,
-                    files: Arc::new(Default::default()),
+                    files: Default::default(),
                     workspace: Mutex::new(String::new()),
                     global_cache: Mutex::new(Default::default()),
                 })
