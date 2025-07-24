@@ -138,7 +138,7 @@ impl LanguageServer for Backend {
             Ok(path) => {
                 self.files
                     .update_text_file(&path, params.text_document.text);
-                self.parse_file_2(uri, true).await;
+                self.parse_file(uri, true).await;
             }
             Err(_) => {
                 self.client
@@ -154,7 +154,7 @@ impl LanguageServer for Backend {
         match uri.to_file_path() {
             Ok(path) => {
                 self.files.update_partial_text_file(&path, params);
-                self.parse_file_2(uri, false).await;
+                self.parse_file(uri, false).await;
             }
             Err(_) => {
                 self.client
@@ -173,7 +173,7 @@ impl LanguageServer for Backend {
             }
         }
 
-        self.parse_file_2(uri, true).await;
+        self.parse_file(uri, true).await;
     }
 
     async fn did_close(&self, _: DidCloseTextDocumentParams) {
@@ -520,7 +520,7 @@ impl Backend {
         Ok(None)
     }
 
-    async fn parse_file_2(&self, uri: Url, wait: bool) {
+    async fn parse_file(&self, uri: Url, wait: bool) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let request = ParseRequest {
             url: uri.clone(),
@@ -653,96 +653,6 @@ impl Backend {
                 }
             }
         });
-    }
-
-    async fn parse_file_3(&self, uri: Url) {
-        let workspace = self.workspace.lock().await;
-        tracing::debug!("workspace in parse file: {}", workspace);
-
-        let workspace_lib = PathBuf::from(&*workspace)
-            .join("lib/forge-std/src")
-            .canonicalize()
-            .unwrap();
-
-        tracing::debug!("workspace_lib ...: {}", workspace_lib.to_str().unwrap());
-
-        let mut resolver = FileResolver::default();
-        for entry in self.files.text_buffers.iter() {
-            let path = entry.key();
-            let contents = entry.value().clone();
-
-            resolver.set_file_contents(path.to_str().unwrap(), contents);
-        }
-        if let Ok(path) = uri.to_file_path() {
-            let dir = path.parent().unwrap();
-            resolver.add_import_path(dir);
-
-            // Add the lib path to import all the libraries from Forge.
-            resolver.add_import_map("forge-std".into(), workspace_lib);
-
-            let mut diags = Vec::new();
-            let os_str = path.file_name().unwrap();
-
-            let ns = parse_and_resolve(os_str, &mut resolver, Target::EVM);
-
-            diags.extend(ns.diagnostics.iter().filter_map(|diag| {
-                if diag.loc.file_no() != ns.top_file_no() {
-                    // The first file is the one we wanted to parse; others are imported
-                    return None;
-                }
-
-                let severity = match diag.level {
-                    ast::Level::Info => Some(DiagnosticSeverity::INFORMATION),
-                    ast::Level::Warning => Some(DiagnosticSeverity::WARNING),
-                    ast::Level::Error => Some(DiagnosticSeverity::ERROR),
-                    ast::Level::Debug => {
-                        return None;
-                    }
-                };
-
-                let related_information = if diag.notes.is_empty() {
-                    None
-                } else {
-                    Some(
-                        diag.notes
-                            .iter()
-                            .map(|note| DiagnosticRelatedInformation {
-                                message: note.message.to_string(),
-                                location: Location {
-                                    uri: Url::from_file_path(&ns.files[note.loc.file_no()].path)
-                                        .unwrap(),
-                                    range: loc_to_range(&note.loc, &ns.files[ns.top_file_no()]),
-                                },
-                            })
-                            .collect(),
-                    )
-                };
-
-                let range = loc_to_range(&diag.loc, &ns.files[ns.top_file_no()]);
-
-                Some(Diagnostic {
-                    range,
-                    message: diag.message.to_string(),
-                    severity,
-                    related_information,
-                    ..Default::default()
-                })
-            }));
-
-            let res = self.client.publish_diagnostics(uri, diags, None);
-            let (file_caches, global_cache) = Builder::new(&ns).build();
-
-            for (f, c) in ns.files.iter().zip(file_caches.into_iter()) {
-                if f.cache_no.is_some() {
-                    self.files.caches.insert(f.path.clone(), c);
-                }
-            }
-
-            let mut gc = self.global_cache.lock().await;
-            gc.extend(global_cache);
-
-            res.await;
-        }
     }
 }
 
