@@ -19,6 +19,8 @@ use crate::builder::{Builder, Files, GlobalCache};
 use crate::tracer::{DebugTrace, Forge};
 use pprof::protos::Message;
 use std::io::Write;
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 use solang::file_resolver::FileResolver;
 use solang_parser::pt;
@@ -44,9 +46,10 @@ mod tracer;
 
 struct Backend {
     client: Client,
-    files: Mutex<Files>,
+    files: Arc<Files>,
     workspace: Mutex<String>,
-    global_cache: Mutex<GlobalCache>,
+    global_cache: Arc<Mutex<GlobalCache>>,
+    tx: OnceLock<tokio::sync::mpsc::Sender<ParseRequest>>,
 }
 
 #[derive(Debug)]
@@ -78,7 +81,14 @@ impl LanguageServer for Backend {
         let workspace_path = workspace.path().to_string();
 
         let mut workspace_guard = self.workspace.lock().await;
-        *workspace_guard = workspace_path;
+        *workspace_guard = workspace_path.clone();
+
+        self.tx.get_or_init(|| {
+            let (tx, rx) = tokio::sync::mpsc::channel(5);
+            self.spawn_compiler_routine(workspace_path, rx);
+
+            tx
+        });
 
         Ok(InitializeResult {
             server_info: None,
@@ -129,12 +139,8 @@ impl LanguageServer for Backend {
         match uri.to_file_path() {
             Ok(path) => {
                 self.files
-                    .lock()
-                    .await
-                    .text_buffers
-                    .insert(path, params.text_document.text);
-
-                self.parse_file(uri).await;
+                    .update_text_file(&path, params.text_document.text);
+                self.parse_file(uri, true).await;
             }
             Err(_) => {
                 self.client
@@ -145,17 +151,12 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri;
+        let uri = params.text_document.uri.clone();
 
         match uri.to_file_path() {
             Ok(path) => {
-                if let Some(text_buf) = self.files.lock().await.text_buffers.get_mut(&path) {
-                    *text_buf = params
-                        .content_changes
-                        .into_iter()
-                        .fold(text_buf.clone(), update_file_contents);
-                }
-                // self.parse_file(uri).await;
+                self.files.update_partial_text_file(&path, params);
+                self.parse_file(uri, false).await;
             }
             Err(_) => {
                 self.client
@@ -172,14 +173,11 @@ impl LanguageServer for Backend {
 
         if let Some(text) = params.text {
             if let Ok(path) = uri.to_file_path() {
-                if let Some(text_buf) = self.files.lock().await.text_buffers.get_mut(&path) {
-                    *text_buf = text;
-                }
+                self.files.update_text_file(&path, text);
             }
         }
 
-        // self.parse_file(uri).await;
-        tracing::info!("File saved");
+        self.parse_file(uri, true).await;
     }
 
     async fn did_close(&self, _: DidCloseTextDocumentParams) {
@@ -213,8 +211,7 @@ impl LanguageServer for Backend {
         let uri = txtdoc.uri;
 
         if let Ok(path) = uri.to_file_path() {
-            let files = &self.files.lock().await;
-            if let Some(cache) = files.caches.get(&path) {
+            if let Some(cache) = self.files.caches.get(&path) {
                 if let Some(offset) = cache
                     .file
                     .get_offset(pos.line as usize, pos.character as usize)
@@ -276,10 +273,14 @@ impl LanguageServer for Backend {
 
         // fetch all the locations in source code where the code object is referenced
         // this includes the definition location of the code object
-        let caches = &self.files.lock().await.caches;
-        let mut locations: Vec<_> = caches
+        let mut locations: Vec<_> = self
+            .files
+            .caches
             .iter()
-            .flat_map(|(p, cache)| {
+            .flat_map(|entry| {
+                let p = entry.key();
+                let cache = entry.value();
+
                 let uri = Url::from_file_path(p).unwrap();
                 cache
                     .references
@@ -289,6 +290,7 @@ impl LanguageServer for Backend {
                         uri: uri.clone(),
                         range: get_range_exclusive(r.start, r.stop, &cache.file),
                     })
+                    .collect::<Vec<_>>() // Collect inner iterator to break the reference chain
             })
             .collect();
 
@@ -369,8 +371,7 @@ impl LanguageServer for Backend {
 
         let declarations = &self.global_cache.lock().await.definitions;
 
-        let files = self.files.lock().await;
-        if let Some(cache) = files.caches.get(&path) {
+        if let Some(cache) = self.files.caches.get(&path) {
             let file_path = uri.path();
 
             #[allow(clippy::unnecessary_filter_map)]
@@ -458,54 +459,12 @@ impl LanguageServer for Backend {
     }
 }
 
-fn update_file_contents(
-    mut prev_content: String,
-    content_change: TextDocumentContentChangeEvent,
-) -> String {
-    if let Some(range) = content_change.range {
-        let start_line = range.start.line as usize;
-        let start_col = range.start.character as usize;
-        let end_line = range.end.line as usize;
-        let end_col = range.end.character as usize;
-
-        // Directly add the changes to the buffer when changes are present at the end of the file.
-        if start_line == prev_content.lines().count() {
-            prev_content.push_str(&content_change.text);
-            return prev_content;
-        }
-
-        let mut new_content = String::new();
-        for (i, line) in prev_content.lines().enumerate() {
-            if i < start_line {
-                new_content.push_str(line);
-                new_content.push('\n');
-                continue;
-            }
-
-            if i > end_line {
-                new_content.push_str(line);
-                new_content.push('\n');
-                continue;
-            }
-
-            if i == start_line {
-                new_content.push_str(&line[..start_col]);
-                new_content.push_str(&content_change.text);
-            }
-
-            if i == end_line {
-                new_content.push_str(&line[end_col..]);
-                new_content.push('\n');
-            }
-        }
-        new_content
-    } else {
-        // When no range is provided, entire file is sent in the request.
-        content_change.text
-    }
-}
-
 const TEMP_FORGE_DUMP_PATH: &str = "/tmp/debug_trace.json";
+
+struct ParseRequest {
+    url: Url,
+    response_tx: tokio::sync::oneshot::Sender<()>,
+}
 
 impl Backend {
     async fn send_log(&self, channel: String, message: String) {
@@ -594,8 +553,7 @@ impl Backend {
             data: None,
         })?;
 
-        let files = self.files.lock().await;
-        if let Some(cache) = files.caches.get(&path) {
+        if let Some(cache) = self.files.caches.get(&path) {
             let f = &cache.file;
             if let Some(offset) = f.get_offset(
                 params.text_document_position_params.position.line as _,
@@ -613,92 +571,143 @@ impl Backend {
         Ok(None)
     }
 
-    async fn parse_file(&self, uri: Url) {
-        let workspace = self.workspace.lock().await;
-        tracing::debug!("workspace in parse file: {}", workspace);
+    async fn parse_file(&self, uri: Url, wait: bool) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let request = ParseRequest {
+            url: uri.clone(),
+            response_tx: tx,
+        };
+
+        if let Some(sender) = self.tx.get() {
+            if let Err(e) = sender.send(request).await {
+                tracing::error!("Failed to send parse request for: {}: {}", uri, e);
+                return;
+            }
+        } else {
+            tracing::error!("Compiler routine not initialized, cannot parse file");
+            return;
+        }
+
+        // Wait for the response
+        if wait {
+            let _ = rx.await;
+        }
+    }
+
+    fn spawn_compiler_routine(
+        &self,
+        workspace: String,
+        mut rx: tokio::sync::mpsc::Receiver<ParseRequest>,
+    ) {
+        let files = Arc::clone(&self.files);
+        let global_cache = Arc::clone(&self.global_cache);
+        let client = self.client.clone();
+
+        tracing::info!("Compiler spawning task started, workspace: {}", workspace);
 
         let workspace_lib = PathBuf::from(&*workspace)
             .join("lib/forge-std/src")
             .canonicalize()
             .unwrap();
 
-        tracing::debug!("workspace_lib ...: {}", workspace_lib.to_str().unwrap());
+        tokio::spawn(async move {
+            while let Some(req) = rx.recv().await {
+                tracing::info!("Received parse request for: {}", req.url);
 
-        let mut resolver = FileResolver::default();
-        for (path, contents) in &self.files.lock().await.text_buffers {
-            resolver.set_file_contents(path.to_str().unwrap(), contents.clone());
-        }
-        if let Ok(path) = uri.to_file_path() {
-            let dir = path.parent().unwrap();
-            resolver.add_import_path(dir);
+                let uri = req.url.clone();
+                let workspace_lib = workspace_lib.clone();
 
-            // Add the lib path to import all the libraries from Forge.
-            resolver.add_import_map("forge-std".into(), workspace_lib);
+                let mut resolver = FileResolver::default();
+                for entry in files.text_buffers.iter() {
+                    let path = entry.key();
+                    let contents = entry.value().clone();
 
-            let mut diags = Vec::new();
-            let os_str = path.file_name().unwrap();
-
-            let ns = parse_and_resolve(os_str, &mut resolver, Target::EVM);
-
-            diags.extend(ns.diagnostics.iter().filter_map(|diag| {
-                if diag.loc.file_no() != ns.top_file_no() {
-                    // The first file is the one we wanted to parse; others are imported
-                    return None;
+                    resolver.set_file_contents(path.to_str().unwrap(), contents);
                 }
+                if let Ok(path) = uri.to_file_path() {
+                    let dir = path.parent().unwrap();
+                    resolver.add_import_path(dir);
 
-                let severity = match diag.level {
-                    ast::Level::Info => Some(DiagnosticSeverity::INFORMATION),
-                    ast::Level::Warning => Some(DiagnosticSeverity::WARNING),
-                    ast::Level::Error => Some(DiagnosticSeverity::ERROR),
-                    ast::Level::Debug => {
-                        return None;
+                    // Add the lib path to import all the libraries from Forge.
+                    resolver.add_import_map("forge-std".into(), workspace_lib);
+
+                    let mut diags = Vec::new();
+                    let os_str = path.file_name().unwrap();
+
+                    let ns = parse_and_resolve(os_str, &mut resolver, Target::EVM);
+
+                    diags.extend(ns.diagnostics.iter().filter_map(|diag| {
+                        if diag.loc.file_no() != ns.top_file_no() {
+                            // The first file is the one we wanted to parse; others are imported
+                            return None;
+                        }
+
+                        let severity = match diag.level {
+                            ast::Level::Info => Some(DiagnosticSeverity::INFORMATION),
+                            ast::Level::Warning => Some(DiagnosticSeverity::WARNING),
+                            ast::Level::Error => Some(DiagnosticSeverity::ERROR),
+                            ast::Level::Debug => {
+                                return None;
+                            }
+                        };
+
+                        let related_information = if diag.notes.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                diag.notes
+                                    .iter()
+                                    .map(|note| DiagnosticRelatedInformation {
+                                        message: note.message.to_string(),
+                                        location: Location {
+                                            uri: Url::from_file_path(
+                                                &ns.files[note.loc.file_no()].path,
+                                            )
+                                            .unwrap(),
+                                            range: loc_to_range(
+                                                &note.loc,
+                                                &ns.files[ns.top_file_no()],
+                                            ),
+                                        },
+                                    })
+                                    .collect(),
+                            )
+                        };
+
+                        let range = loc_to_range(&diag.loc, &ns.files[ns.top_file_no()]);
+
+                        Some(Diagnostic {
+                            range,
+                            message: diag.message.to_string(),
+                            severity,
+                            related_information,
+                            ..Default::default()
+                        })
+                    }));
+
+                    let res = client.publish_diagnostics(uri, diags, None);
+                    let (file_caches, sub_global_cache) = Builder::new(&ns).build();
+
+                    for (f, c) in ns.files.iter().zip(file_caches.into_iter()) {
+                        if f.cache_no.is_some() {
+                            files.caches.insert(f.path.clone(), c);
+                        }
                     }
-                };
 
-                let related_information = if diag.notes.is_empty() {
-                    None
-                } else {
-                    Some(
-                        diag.notes
-                            .iter()
-                            .map(|note| DiagnosticRelatedInformation {
-                                message: note.message.to_string(),
-                                location: Location {
-                                    uri: Url::from_file_path(&ns.files[note.loc.file_no()].path)
-                                        .unwrap(),
-                                    range: loc_to_range(&note.loc, &ns.files[ns.top_file_no()]),
-                                },
-                            })
-                            .collect(),
-                    )
-                };
+                    let mut gc = global_cache.lock().await;
+                    gc.extend(sub_global_cache);
 
-                let range = loc_to_range(&diag.loc, &ns.files[ns.top_file_no()]);
+                    res.await;
 
-                Some(Diagnostic {
-                    range,
-                    message: diag.message.to_string(),
-                    severity,
-                    related_information,
-                    ..Default::default()
-                })
-            }));
+                    // ask again for code lens because now we do it async so the system might be asking for
+                    // code lens before the compilation is done
+                    let _ = client.code_lens_refresh().await;
 
-            let res = self.client.publish_diagnostics(uri, diags, None);
-            let (file_caches, global_cache) = Builder::new(&ns).build();
-
-            let mut files = self.files.lock().await;
-            for (f, c) in ns.files.iter().zip(file_caches.into_iter()) {
-                if f.cache_no.is_some() {
-                    files.caches.insert(f.path.clone(), c);
+                    // notify that the compilation routine is done
+                    let _ = req.response_tx.send(());
                 }
             }
-
-            let mut gc = self.global_cache.lock().await;
-            gc.extend(global_cache);
-
-            res.await;
-        }
+        });
     }
 }
 
@@ -836,9 +845,10 @@ impl Cli {
             Commands::Server(args) => {
                 let (service, socket) = LspService::build(|client| Backend {
                     client,
-                    files: Mutex::new(Default::default()),
+                    files: Arc::new(Default::default()),
                     workspace: Mutex::new(String::new()),
-                    global_cache: Mutex::new(Default::default()),
+                    global_cache: Arc::new(Mutex::new(Default::default())),
+                    tx: OnceLock::new(),
                 })
                 .finish();
 
