@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solang::sema::ast;
 use solang::{parse_and_resolve, Target};
+use std::collections::HashMap;
 use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::request::GotoTypeDefinitionResponse;
@@ -258,6 +259,43 @@ impl LanguageServer for Backend {
             .map(GotoTypeDefinitionResponse::Scalar);
 
         Ok(location)
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let def_params: GotoDefinitionParams = GotoDefinitionParams {
+            text_document_position_params: params.text_document_position,
+            work_done_progress_params: params.work_done_progress_params,
+            partial_result_params: Default::default(),
+        };
+        let Some(reference) = self.get_reference_from_params(def_params).await? else {
+            return Ok(None);
+        };
+
+        let new_text = params.new_name;
+
+        let ws = self
+            .files
+            .caches
+            .iter()
+            .map(|entry| {
+                let p = entry.key();
+                let cache = entry.value();
+
+                let uri = Url::from_file_path(p).unwrap();
+                let text_edits: Vec<_> = cache
+                    .references
+                    .iter()
+                    .filter(|r| r.val == reference)
+                    .map(|r| TextEdit {
+                        range: get_range_exclusive(r.start, r.stop, &cache.file),
+                        new_text: new_text.clone(),
+                    })
+                    .collect();
+                (uri, text_edits)
+            })
+            .collect::<HashMap<_, _>>();
+
+        Ok(Some(WorkspaceEdit::new(ws)))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
