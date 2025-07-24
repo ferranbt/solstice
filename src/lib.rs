@@ -2,7 +2,7 @@ use builder::DefinitionIndex;
 use built_info::PKG_VERSION;
 use clap::{Args, Parser, Subcommand};
 use debugger::DapDebugger;
-use forge_fmt::{fmt, FormatterConfig};
+use forge_fmt::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solang::sema::ast;
@@ -324,24 +324,26 @@ impl LanguageServer for Backend {
             message: format!("Received invalid URI: {uri}").into(),
             data: None,
         })?;
-        let start = std::time::Instant::now();
 
-        let source = std::fs::read_to_string(source_path).map_err(|err| Error {
-            code: ErrorCode::InternalError,
-            message: format!("Failed to read file: {uri}").into(),
-            data: Some(Value::String(format!("{err:?}"))),
-        })?;
+        let source = self
+            .files
+            .text_buffers
+            .get(&source_path)
+            .ok_or_else(|| Error {
+                code: ErrorCode::InvalidRequest,
+                message: format!("File not found: {uri}").into(),
+                data: None,
+            })?;
 
-        tracing::info!("Reading file: {} took {:?}", uri, start.elapsed());
-        let start = std::time::Instant::now();
-
-        let source_formatted = fmt(&source).map_err(|err| Error {
-            code: ErrorCode::InternalError,
-            message: format!("Failed to format file: {uri}").into(),
-            data: Some(Value::String(format!("{err:?}"))),
-        })?;
-
-        tracing::info!("Formatting file: {} took {:?}", uri, start.elapsed());
+        let source_formatted = match fmt(&source) {
+            Ok(formatted) => formatted,
+            Err(e) => {
+                // This most likely is a syntax error on the user part. If we were to return an error
+                // it would show up as a modal window in the editor, which is not ideal.
+                tracing::debug!("Failed to format file: {}: {}", uri, e);
+                return Ok(None);
+            }
+        };
 
         // create a `TextEdit` instance that replaces the contents of the file with the formatted text
         let text_edit = TextEdit {

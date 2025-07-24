@@ -5,7 +5,7 @@ contract FooTest is Test {
     struct Example {
         uint256 value_storage;
     }
-    
+
     uint256 value_storage;
     Example[2][] second_storage;
 
@@ -13,7 +13,7 @@ contract FooTest is Test {
         uint256 value = block.number; // Non-constant value
         value = value + 1;
         if (value < 10) {
-            value = value + 1;
+            value = value + 1 + 1;
         }
         Example memory example = Example({value_storage: value});
         value_storage = 1;
