@@ -14,7 +14,7 @@ use solang::{
 use solang_parser::pt;
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 use tower_lsp::lsp_types::{DidChangeTextDocumentParams, TextDocumentContentChangeEvent};
 use tower_lsp::lsp_types::{Position, Range};
@@ -27,15 +27,15 @@ pub struct Files {
 }
 
 impl Files {
-    pub fn update_text_file(&self, path: &PathBuf, text: String) {
-        self.text_buffers.insert(path.clone(), text);
+    pub fn update_text_file(&self, path: &Path, text: String) {
+        self.text_buffers.insert(path.to_path_buf(), text);
     }
 
     pub fn update_partial_text_file(&self, path: &PathBuf, params: DidChangeTextDocumentParams) {
         let text_buf = self
             .text_buffers
             .get(path)
-            .map_or_else(|| String::new(), |buf| buf.clone());
+            .map_or_else(String::new, |buf| buf.clone());
 
         let updated_text = params
             .content_changes
