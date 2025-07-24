@@ -43,7 +43,7 @@ mod tracer;
 
 struct Backend {
     client: Client,
-    files: Mutex<Files>,
+    files: Files,
     workspace: Mutex<String>,
     global_cache: Mutex<GlobalCache>,
 }
@@ -127,11 +127,7 @@ impl LanguageServer for Backend {
         match uri.to_file_path() {
             Ok(path) => {
                 self.files
-                    .lock()
-                    .await
-                    .text_buffers
-                    .insert(path, params.text_document.text);
-
+                    .update_text_file(&path, params.text_document.text);
                 self.parse_file(uri).await;
             }
             Err(_) => {
@@ -143,16 +139,11 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri;
+        let uri = params.text_document.uri.clone();
 
         match uri.to_file_path() {
             Ok(path) => {
-                if let Some(text_buf) = self.files.lock().await.text_buffers.get_mut(&path) {
-                    *text_buf = params
-                        .content_changes
-                        .into_iter()
-                        .fold(text_buf.clone(), update_file_contents);
-                }
+                self.files.update_partial_text_file(&path, params);
                 self.parse_file(uri).await;
             }
             Err(_) => {
@@ -168,9 +159,7 @@ impl LanguageServer for Backend {
 
         if let Some(text) = params.text {
             if let Ok(path) = uri.to_file_path() {
-                if let Some(text_buf) = self.files.lock().await.text_buffers.get_mut(&path) {
-                    *text_buf = text;
-                }
+                self.files.update_text_file(&path, text);
             }
         }
 
@@ -208,8 +197,7 @@ impl LanguageServer for Backend {
         let uri = txtdoc.uri;
 
         if let Ok(path) = uri.to_file_path() {
-            let files = &self.files.lock().await;
-            if let Some(cache) = files.caches.get(&path) {
+            if let Some(cache) = self.files.caches.get(&path) {
                 if let Some(offset) = cache
                     .file
                     .get_offset(pos.line as usize, pos.character as usize)
@@ -271,10 +259,14 @@ impl LanguageServer for Backend {
 
         // fetch all the locations in source code where the code object is referenced
         // this includes the definition location of the code object
-        let caches = &self.files.lock().await.caches;
-        let mut locations: Vec<_> = caches
+        let mut locations: Vec<_> = self
+            .files
+            .caches
             .iter()
-            .flat_map(|(p, cache)| {
+            .flat_map(|entry| {
+                let p = entry.key();
+                let cache = entry.value();
+
                 let uri = Url::from_file_path(p).unwrap();
                 cache
                     .references
@@ -284,6 +276,7 @@ impl LanguageServer for Backend {
                         uri: uri.clone(),
                         range: get_range_exclusive(r.start, r.stop, &cache.file),
                     })
+                    .collect::<Vec<_>>() // Collect inner iterator to break the reference chain
             })
             .collect();
 
@@ -317,8 +310,7 @@ impl LanguageServer for Backend {
 
         let declarations = &self.global_cache.lock().await.definitions;
 
-        let files = self.files.lock().await;
-        if let Some(cache) = files.caches.get(&path) {
+        if let Some(cache) = self.files.caches.get(&path) {
             let file_path = uri.path();
 
             #[allow(clippy::unnecessary_filter_map)]
@@ -403,53 +395,6 @@ impl LanguageServer for Backend {
         }
 
         Ok(None)
-    }
-}
-
-fn update_file_contents(
-    mut prev_content: String,
-    content_change: TextDocumentContentChangeEvent,
-) -> String {
-    if let Some(range) = content_change.range {
-        let start_line = range.start.line as usize;
-        let start_col = range.start.character as usize;
-        let end_line = range.end.line as usize;
-        let end_col = range.end.character as usize;
-
-        // Directly add the changes to the buffer when changes are present at the end of the file.
-        if start_line == prev_content.lines().count() {
-            prev_content.push_str(&content_change.text);
-            return prev_content;
-        }
-
-        let mut new_content = String::new();
-        for (i, line) in prev_content.lines().enumerate() {
-            if i < start_line {
-                new_content.push_str(line);
-                new_content.push('\n');
-                continue;
-            }
-
-            if i > end_line {
-                new_content.push_str(line);
-                new_content.push('\n');
-                continue;
-            }
-
-            if i == start_line {
-                new_content.push_str(&line[..start_col]);
-                new_content.push_str(&content_change.text);
-            }
-
-            if i == end_line {
-                new_content.push_str(&line[end_col..]);
-                new_content.push('\n');
-            }
-        }
-        new_content
-    } else {
-        // When no range is provided, entire file is sent in the request.
-        content_change.text
     }
 }
 
@@ -542,8 +487,7 @@ impl Backend {
             data: None,
         })?;
 
-        let files = self.files.lock().await;
-        if let Some(cache) = files.caches.get(&path) {
+        if let Some(cache) = self.files.caches.get(&path) {
             let f = &cache.file;
             if let Some(offset) = f.get_offset(
                 params.text_document_position_params.position.line as _,
@@ -573,8 +517,11 @@ impl Backend {
         tracing::debug!("workspace_lib ...: {}", workspace_lib.to_str().unwrap());
 
         let mut resolver = FileResolver::default();
-        for (path, contents) in &self.files.lock().await.text_buffers {
-            resolver.set_file_contents(path.to_str().unwrap(), contents.clone());
+        for entry in self.files.text_buffers.iter() {
+            let path = entry.key();
+            let contents = entry.value().clone();
+
+            resolver.set_file_contents(path.to_str().unwrap(), contents);
         }
         if let Ok(path) = uri.to_file_path() {
             let dir = path.parent().unwrap();
@@ -635,10 +582,9 @@ impl Backend {
             let res = self.client.publish_diagnostics(uri, diags, None);
             let (file_caches, global_cache) = Builder::new(&ns).build();
 
-            let mut files = self.files.lock().await;
             for (f, c) in ns.files.iter().zip(file_caches.into_iter()) {
                 if f.cache_no.is_some() {
-                    files.caches.insert(f.path.clone(), c);
+                    self.files.caches.insert(f.path.clone(), c);
                 }
             }
 
@@ -784,7 +730,7 @@ impl Cli {
             Commands::Server(args) => {
                 let (service, socket) = LspService::build(|client| Backend {
                     client,
-                    files: Mutex::new(Default::default()),
+                    files: Default::default(),
                     workspace: Mutex::new(String::new()),
                     global_cache: Mutex::new(Default::default()),
                 })
