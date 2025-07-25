@@ -8,3 +8,4 @@ out/
 cache/
 /trace
 /external
+.vscode-test

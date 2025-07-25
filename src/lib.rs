@@ -78,7 +78,11 @@ impl Notification for CustomNotification2 {
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        let workspace = params.root_uri.unwrap();
+        let workspace = params.root_uri.unwrap_or_else(|| {
+            // If no root URI is provided, use the current directory as the workspace
+            // In E2E tests, this is the case.
+            Url::from_file_path(std::env::current_dir().unwrap()).unwrap()
+        });
         let workspace_path = workspace.path().to_string();
 
         let mut workspace_guard = self.workspace.lock().await;
@@ -645,17 +649,19 @@ impl Backend {
 
         tracing::info!("Compiler spawning task started, workspace: {}", workspace);
 
+        /*
         let workspace_lib = PathBuf::from(&*workspace)
             .join("lib/forge-std/src")
             .canonicalize()
             .unwrap();
+        */
 
         tokio::spawn(async move {
             while let Some(req) = rx.recv().await {
                 tracing::info!("Received parse request for: {}", req.url);
 
                 let uri = req.url.clone();
-                let workspace_lib = workspace_lib.clone();
+                // let workspace_lib = workspace_lib.clone();
 
                 let mut resolver = FileResolver::default();
                 for entry in files.text_buffers.iter() {
@@ -669,7 +675,7 @@ impl Backend {
                     resolver.add_import_path(dir);
 
                     // Add the lib path to import all the libraries from Forge.
-                    resolver.add_import_map("forge-std".into(), workspace_lib);
+                    // resolver.add_import_map("forge-std".into(), workspace_lib);
 
                     let mut diags = Vec::new();
                     let os_str = path.file_name().unwrap();
