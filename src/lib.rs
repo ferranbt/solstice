@@ -109,6 +109,7 @@ impl LanguageServer for Backend {
                     commands: vec!["sol.test.file".to_string(), "sol.debug.file".to_string()],
                     work_done_progress_options: Default::default(),
                 }),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(true),
                 }),
@@ -404,6 +405,34 @@ impl LanguageServer for Backend {
         };
 
         Ok(Some(vec![text_edit]))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        tracing::info!(
+            "Code action requested for {:?} {:?}",
+            params.text_document.uri,
+            params.range.start.line
+        );
+
+        let uri = params.text_document.uri;
+        let path = uri.to_file_path().unwrap();
+        if let Some(cache) = self.files.caches.get(&path) {
+            if let Some(reference) = cache
+                .unknown_types
+                .iter()
+                .find(|(loc, _)| loc.start == params.range.start)
+            // TODO (end)
+            {
+                // Now we have to find a type with the name 'unknown_type'
+                let unknown_type = &reference.1;
+                tracing::info!("Unknown type found: {:?}", unknown_type);
+
+                let top_level_types = &self.global_cache.lock().await.top_level_code_objects;
+                tracing::info!("Top level types: {:?}", top_level_types);
+            }
+        }
+
+        Ok(None)
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {

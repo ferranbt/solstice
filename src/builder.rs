@@ -101,6 +101,7 @@ pub struct FileCache {
     #[allow(dead_code)]
     pub scopes: Lapper<usize, Vec<(String, Option<DefinitionIndex>)>>,
     pub top_level_code_objects: HashMap<String, Option<DefinitionIndex>>,
+    pub unknown_types: Vec<(Range, String)>,
 }
 
 /// Stores information used by the language server to service requests (eg: `Go to Definitions`) received from the client.
@@ -123,6 +124,7 @@ pub struct GlobalCache {
     pub declarations: Declarations,
     pub implementations: Implementations,
     pub properties: Properties,
+    pub top_level_code_objects: Vec<(usize, (String, Option<DefinitionIndex>))>,
 }
 
 impl GlobalCache {
@@ -1487,6 +1489,8 @@ impl<'a> Builder<'a> {
         }
 
         for (ci, contract) in self.ns.contracts.iter().enumerate() {
+            tracing::info!("Parsing contract: {}", contract.id);
+
             for base in &contract.bases {
                 let file_no = base.loc.file_no();
                 self.hovers.push((
@@ -1681,6 +1685,12 @@ impl<'a> Builder<'a> {
                 },
             ));
 
+            tracing::info!(
+                "Store contract name: {} with def_index: {:?}",
+                contract.id.name,
+                contract_def_index
+            );
+
             // Contracts can't be defined within other contracts.
             // So all the contracts are top level objects in a file.
             self.top_level_code_objects.push((
@@ -1773,6 +1783,22 @@ impl<'a> Builder<'a> {
             }
         }
 
+        let unknown_type_diag = self
+            .ns
+            .diagnostics
+            .iter()
+            .flat_map(|diag| {
+                if let Some(type_name) = retrieve_type_name_from_diagnostic(diag.message.clone()) {
+                    let loc = loc_to_range(&diag.loc, &self.ns.files[diag.loc.file_no()]);
+                    Some((diag.loc.file_no(), loc, type_name))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<(usize, Range, String)>>();
+
+        tracing::info!("Unknown types: {:?}", unknown_type_diag);
+
         let file_caches = self
             .ns
             .files
@@ -1835,6 +1861,11 @@ impl<'a> Builder<'a> {
                         code_object.1.clone()
                     })
                     .collect(),
+                unknown_types: unknown_type_diag
+                    .iter()
+                    .filter(|(file_no, _, _)| *file_no == i)
+                    .map(|(_, loc, type_name)| (loc.clone(), type_name.clone()))
+                    .collect(),
             })
             .collect();
 
@@ -1854,6 +1885,7 @@ impl<'a> Builder<'a> {
             declarations: self.declarations,
             implementations: self.implementations,
             properties: self.properties,
+            top_level_code_objects: self.top_level_code_objects,
         };
 
         (file_caches, global_cache)
@@ -1962,6 +1994,20 @@ fn get_constants(expr: &Expression) -> Option<String> {
     Some(val)
 }
 
+fn retrieve_type_name_from_diagnostic(message: String) -> Option<String> {
+    // Look for pattern: type '<type_name>' not found
+    if let Some(start) = message.find("type '") {
+        let after_start = start + 6; // Skip "type '"
+        if let Some(end) = message[after_start..].find("' not found") {
+            let type_name = &message[after_start..after_start + end];
+            if !type_name.is_empty() {
+                return Some(type_name.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1969,6 +2015,35 @@ mod test {
         DidChangeTextDocumentParams, TextDocumentContentChangeEvent, Url,
         VersionedTextDocumentIdentifier,
     };
+
+    #[test]
+    fn test_retrieve_type_name() {
+        // Test basic functionality
+        assert_eq!(
+            retrieve_type_name_from_diagnostic("type 'MyContract' not found".to_string()),
+            Some("MyContract".to_string())
+        );
+
+        // Test with context
+        assert_eq!(
+            retrieve_type_name_from_diagnostic(
+                "Error: type 'IERC20' not found in scope".to_string()
+            ),
+            Some("IERC20".to_string())
+        );
+
+        // Test no match
+        assert_eq!(
+            retrieve_type_name_from_diagnostic("undefined variable MyContract".to_string()),
+            None
+        );
+
+        // Test empty type name
+        assert_eq!(
+            retrieve_type_name_from_diagnostic("type '' not found".to_string()),
+            None
+        );
+    }
 
     #[test]
     fn test_files_update_text_file() {
