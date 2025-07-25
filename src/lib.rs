@@ -103,6 +103,7 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: None,
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["sol.test.file".to_string(), "sol.debug.file".to_string()],
