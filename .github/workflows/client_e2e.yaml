@@ -38,7 +38,9 @@ jobs:
       working-directory: ./extension
     
     - name: Build extension
-      run: npm run compile
+      run: |
+        npm run compile
+        npm run build
       working-directory: ./extension
     
     - name: Run tests (Linux)
