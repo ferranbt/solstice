@@ -31,7 +31,7 @@ jobs:
         toolchain: stable
     
     - name: Build language server
-      run: cargo build --release
+      run: cargo build
     
     - name: Install extension dependencies
       run: npm ci
