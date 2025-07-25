@@ -1,0 +1,55 @@
+name: Client E2E
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [18.x, 20.x]
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        cache-dependency-path: './extension/package-lock.json'
+    
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+    
+    - name: Build language server
+      run: cargo build --release
+    
+    - name: Install extension dependencies
+      run: npm ci
+      working-directory: ./extension
+    
+    - name: Build extension
+      run: npm run compile
+      working-directory: ./extension
+    
+    - name: Run tests (Linux)
+      run: |
+        export DISPLAY=:99
+        Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+        npm test-integration
+      working-directory: ./extension
+      if: matrix.os == 'ubuntu-latest'
+    
+    - name: Run tests (macOS)
+      run: npm test-integration
+      working-directory: ./extension
+      if: matrix.os == 'macos-latest'

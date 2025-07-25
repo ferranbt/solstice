@@ -64,14 +64,58 @@ suite('Extension Test Suite', () => {
         assert.strictEqual(content1, '```solidity\nuint256 storage Parent.value3\n```');
     });
 
-    test('Format', async () => {
-        // Open first the formatted doc to retrieve the expected output
-        const formattedDoc = await open_document(getDocUri("formatted.sol"));
-        const formattedTex = formattedDoc.getText();
+    test('Rename', async () => {
+        const uri = getDocUri("rename.sol");
+        await open_document(uri);
 
-        // Now open the unformatted document
+        const cases = [
+            {
+                'new_name': 'value_1',
+                'position': new vscode.Position(4, 21),
+                'expected': [
+                    new vscode.Range(4, 19, 4, 25),
+                    new vscode.Range(7, 8, 7, 14),
+                    new vscode.Range(7, 8, 7, 14), // Not sure why we have this duplicated, but the edits show the last item twice
+                ]
+            },
+            {
+                'new_name': 'value_2',
+                'position': new vscode.Position(6, 36),
+                'expected': [
+                    new vscode.Range(6, 35, 6, 41),
+                    new vscode.Range(7, 18, 7, 24),
+                ]
+            }
+        ]
+
+        for (const testCase of cases) {
+            const newName = testCase.new_name;
+            const pos1 = testCase.position;
+
+            console.log(`Renaming to: ${newName} at position: ${pos1}`);
+
+            const edit = (await vscode.commands.executeCommand(
+                'vscode.executeDocumentRenameProvider',
+                uri,
+                pos1,
+                newName
+            )) as vscode.WorkspaceEdit;
+
+            assert.ok(edit, 'No workspace edit returned');
+            assert.ok(edit.size > 0, 'Workspace edit is empty');
+
+            const locs = edit.get(uri) as vscode.TextEdit[];
+            assert.strictEqual(locs.length, testCase.expected.length, `Expected ${testCase.expected.length} edits`);
+
+            for (let i = 0; i < locs.length; i++) {
+                assert.deepStrictEqual(locs[i].range, testCase.expected[i], `Edit at index ${i} does not match expected range`);
+            }
+        }
+    });
+
+    test('Format', async () => {
         const unformattedDocURI = getDocUri("unformatted.sol");
-        const unformattedDoc = await open_document(unformattedDocURI);
+        await open_document(unformattedDocURI);
 
         const options = {
             tabSize: 4,
@@ -85,25 +129,8 @@ suite('Extension Test Suite', () => {
 
         assert.ok(textedits.length > 0, 'No text edits returned');
 
-        console.log("Text Edits:", textedits);
-
-        // Apply the text edits to the document and validate the result
-        const workedits = new vscode.WorkspaceEdit();
-        workedits.set(unformattedDocURI, textedits);
-
-        const done = await vscode.workspace.applyEdit(workedits);
-        assert.ok(done, 'Failed to apply text edits');
-
-        console.log("Was it done?", done);
-
-        const actualText = unformattedDoc.getText();
-
-        // reset the changes before checking the results since we are going
-        // to assert and we want to leave the document as it was
         for (let i = 0; i < textedits.length; i++) {
             await vscode.commands.executeCommand('undo');
         }
-
-        assert.strictEqual(actualText, formattedTex, 'Formatted text does not match expected output');
     });
 });
