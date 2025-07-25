@@ -11,7 +11,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node-version: [18.x, 20.x]
+        node-version: [20.x]
     
     runs-on: ${{ matrix.os }}
     
@@ -45,11 +45,11 @@ jobs:
       run: |
         export DISPLAY=:99
         Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
-        npm test-integration
+        npm run test-integration
       working-directory: ./extension
       if: matrix.os == 'ubuntu-latest'
     
     - name: Run tests (macOS)
-      run: npm test-integration
+      run: npm run test-integration
       working-directory: ./extension
       if: matrix.os == 'macos-latest'
