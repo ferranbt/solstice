@@ -649,19 +649,16 @@ impl Backend {
 
         tracing::info!("Compiler spawning task started, workspace: {}", workspace);
 
-        /*
-        let workspace_lib = PathBuf::from(&*workspace)
-            .join("lib/forge-std/src")
-            .canonicalize()
-            .unwrap();
-        */
+        let workspace_path = PathBuf::from(&*workspace);
+
+        let lib_remappings = discover_lib_remappings(&workspace_path);
+        tracing::info!("Discovered {} library remappings", lib_remappings.len());
 
         tokio::spawn(async move {
             while let Some(req) = rx.recv().await {
                 tracing::info!("Received parse request for: {}", req.url);
 
                 let uri = req.url.clone();
-                // let workspace_lib = workspace_lib.clone();
 
                 let mut resolver = FileResolver::default();
                 for entry in files.text_buffers.iter() {
@@ -674,8 +671,10 @@ impl Backend {
                     let dir = path.parent().unwrap();
                     resolver.add_import_path(dir);
 
-                    // Add the lib path to import all the libraries from Forge.
-                    // resolver.add_import_map("forge-std".into(), workspace_lib);
+                    // Add all precomputed library remappings
+                    for (lib_name, lib_path) in &lib_remappings {
+                        resolver.add_import_map(lib_name.clone().into(), lib_path.clone());
+                    }
 
                     let mut diags = Vec::new();
                     let os_str = path.file_name().unwrap();
@@ -755,6 +754,65 @@ impl Backend {
             }
         });
     }
+}
+
+// Helper function definition
+fn discover_lib_remappings(workspace_path: &std::path::Path) -> Vec<(String, PathBuf)> {
+    let mut remappings = Vec::new();
+    let lib_dir = workspace_path.join("lib");
+
+    if !lib_dir.exists() || !lib_dir.is_dir() {
+        tracing::debug!("No lib directory found at {}", lib_dir.display());
+        return remappings;
+    }
+
+    match std::fs::read_dir(&lib_dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() {
+                        if let Some(lib_name) = entry.file_name().to_str() {
+                            let lib_src_path = entry.path().join("src");
+
+                            if lib_src_path.exists() && lib_src_path.is_dir() {
+                                match lib_src_path.canonicalize() {
+                                    Ok(canonical_path) => {
+                                        tracing::debug!(
+                                            "Found library: {} -> {}",
+                                            lib_name,
+                                            canonical_path.display()
+                                        );
+                                        remappings.push((lib_name.to_string(), canonical_path));
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Could not canonicalize {} library path: {}",
+                                            lib_name,
+                                            e
+                                        );
+                                    }
+                                }
+                            } else {
+                                tracing::debug!(
+                                    "Library {} has no src directory, skipping",
+                                    lib_name
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Could not read lib directory: {}", e);
+        }
+    }
+
+    tracing::info!(
+        "Discovered libraries: {:?}",
+        remappings.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
+    remappings
 }
 
 /// Calculate the line and column from the Loc offset received from the parser
