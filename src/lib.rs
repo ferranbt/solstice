@@ -78,7 +78,11 @@ impl Notification for CustomNotification2 {
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        let workspace = params.root_uri.unwrap();
+        let workspace = params.root_uri.unwrap_or_else(|| {
+            // If no root URI is provided, use the current directory as the workspace
+            // In E2E tests, this is the case.
+            Url::from_file_path(std::env::current_dir().unwrap()).unwrap()
+        });
         let workspace_path = workspace.path().to_string();
 
         let mut workspace_guard = self.workspace.lock().await;
