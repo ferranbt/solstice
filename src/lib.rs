@@ -210,6 +210,11 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, hverparam: HoverParams) -> Result<Option<Hover>> {
+        tracing::info!(
+            "Hover requested for {:?}",
+            hverparam.text_document_position_params
+        );
+
         let txtdoc = hverparam.text_document_position_params.text_document;
         let pos = hverparam.text_document_position_params.position;
 
