@@ -1916,7 +1916,7 @@ fn get_range(start: usize, end: usize, file: &ast::File) -> Range {
     Range::new(start, end)
 }
 
-fn get_type_definition(ty: &Type) -> Option<DefinitionType> {
+pub fn get_type_definition(ty: &Type) -> Option<DefinitionType> {
     match ty {
         Type::Enum(id) => Some(DefinitionType::Enum(*id)),
         Type::Struct(st) => Some(DefinitionType::Struct(*st)),
