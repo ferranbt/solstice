@@ -76,9 +76,9 @@ suite("Extension Test Suite", () => {
 
     const pos1 = new vscode.Position(11, 9);
     const action = (await vscode.commands.executeCommand(
-      'vscode.executeDefinitionProvider',
+      "vscode.executeDefinitionProvider",
       uri,
-      pos1
+      pos1,
     )) as vscode.Location[];
 
     assert.deepStrictEqual(action[0].range, new vscode.Range(4, 19, 4, 25));
@@ -90,9 +90,9 @@ suite("Extension Test Suite", () => {
 
     const pos1 = new vscode.Position(4, 20);
     const action = (await vscode.commands.executeCommand(
-      'vscode.executeReferenceProvider',
+      "vscode.executeReferenceProvider",
       uri,
-      pos1
+      pos1,
     )) as vscode.Location[];
 
     const expected = [
@@ -102,7 +102,11 @@ suite("Extension Test Suite", () => {
       new vscode.Range(17, 15, 17, 21),
     ];
 
-    assert.strictEqual(action.length, expected.length, "Unexpected number of references found");
+    assert.strictEqual(
+      action.length,
+      expected.length,
+      "Unexpected number of references found",
+    );
     for (let i = 0; i < action.length; i++) {
       assert.deepStrictEqual(
         action[i].range,
