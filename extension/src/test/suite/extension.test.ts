@@ -196,14 +196,15 @@ suite("Extension Test Suite", () => {
     const uri = getDocUri("completion.sol");
     await open_document(uri);
 
-    const get_labels = (list: vscode.CompletionList) => list.items.map(item => item.label);
+    const get_labels = (list: vscode.CompletionList) =>
+      list.items.map((item) => item.label);
 
     const pos1 = new vscode.Position(14, 10);
     const completions = (await vscode.commands.executeCommand(
       "vscode.executeCompletionItemProvider",
       uri,
       pos1,
-      "."
+      ".",
     )) as vscode.CompletionList;
 
     const labels = get_labels(completions);
