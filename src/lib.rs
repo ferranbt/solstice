@@ -1,11 +1,14 @@
-use builder::DefinitionIndex;
+use builder::{get_type_definition, DefinitionIndex};
 use built_info::PKG_VERSION;
 use clap::{Args, Parser, Subcommand};
 use debugger::DapDebugger;
 use forge_fmt::fmt;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solang::sema::ast;
+use solang::sema::builtin::{BUILTIN_FUNCTIONS, BUILTIN_METHODS, BUILTIN_VARIABLE};
+use solang::sema::builtin_structs::BUILTIN_STRUCTS;
 use solang::{parse_and_resolve, Target};
 use std::collections::HashMap;
 use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
@@ -103,8 +106,14 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
+                completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(false),
+                    trigger_characters: Some(vec![".".to_string()]),
+                    all_commit_characters: None,
+                    work_done_progress_options: Default::default(),
+                    completion_item: None,
+                }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
-                completion_provider: None,
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["sol.test.file".to_string(), "sol.debug.file".to_string()],
                     work_done_progress_options: Default::default(),
@@ -477,6 +486,167 @@ impl LanguageServer for Backend {
         }
 
         Ok(None)
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let path = uri.to_file_path().map_err(|_| Error {
+            code: ErrorCode::InvalidRequest,
+            message: format!("Received invalid URI: {uri}").into(),
+            data: None,
+        })?;
+
+        let Some(cache) = self.files.caches.get(&path) else {
+            return Ok(None);
+        };
+
+        let offset = cache
+            .file
+            .get_offset(
+                params.text_document_position.position.line as _,
+                params.text_document_position.position.character as _,
+            )
+            .unwrap();
+
+        let builtin_functions = BUILTIN_FUNCTIONS
+            .iter()
+            .filter(|function| function.target.is_empty() || function.target.contains(&Target::EVM))
+            .map(|function| (function.name.to_string(), None));
+        let builtin_variables = BUILTIN_VARIABLE
+            .iter()
+            .filter(|var| var.target.is_empty() || var.target.contains(&Target::EVM))
+            .map(|var| (var.name.to_string(), None));
+
+        // Get all the code objects available from the lexical scope from which the request was raised.
+        let code_objects_in_scope = cache
+            .scopes
+            .find(offset, offset + 1)
+            // get all the enclosing scopes
+            .flat_map(|scope| scope.val.iter().cloned())
+            // get the top level code objects in the file
+            .chain(cache.top_level_code_objects.clone())
+            // builtins
+            .chain(builtin_functions)
+            .chain(builtin_variables)
+            .collect::<HashMap<_, _>>();
+
+        let global_cache = self.global_cache.lock().await;
+
+        let suggestions = match params.context {
+            Some(CompletionContext {
+                trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+                trigger_character: Some(trigger_character),
+            }) if trigger_character == "." => {
+                let Some(text_buf) = self.files.text_buffers.get(&path) else {
+                    return Ok(None);
+                };
+
+                let mut builtin_methods =
+                    HashMap::<DefinitionType, HashMap<String, Option<DefinitionIndex>>>::new();
+                for method in BUILTIN_METHODS.iter().filter(|method| {
+                    method.target.is_empty() || method.target.contains(&Target::EVM)
+                }) {
+                    if let Some(def_type) = get_type_definition(&method.method[0]) {
+                        builtin_methods
+                            .entry(def_type)
+                            .or_default()
+                            .insert(method.name.to_string(), None);
+                    }
+                }
+
+                let builtin_structs = BUILTIN_STRUCTS
+                    .iter()
+                    .map(|r#struct| {
+                        let def_type = DefinitionType::Struct(r#struct.struct_type);
+                        let fields = r#struct
+                            .struct_decl
+                            .fields
+                            .iter()
+                            .map(|field| (field.name_as_str().to_string(), None))
+                            .collect();
+                        (def_type, fields)
+                    })
+                    .collect::<HashMap<_, HashMap<_, _>>>();
+
+                // Extract code object from source code for which `Completion` request was triggered.
+                // Extracts all the characters connected to the "." character.
+                // This includes all the alphanumeric characters that come before the triggering "."
+                // and the interspersed "." characters between the alphanumeric characters.
+                let code_object = {
+                    let buffer = text_buf.chars().collect_vec();
+                    let mut curr: isize = offset as isize - 2;
+                    while curr >= 0
+                        && (buffer[curr as usize].is_ascii_alphanumeric()
+                            || buffer[curr as usize] == '.')
+                    {
+                        curr -= 1;
+                    }
+                    curr = isize::max(curr, 0);
+                    if !buffer[curr as usize].is_ascii_alphanumeric() {
+                        curr += 1;
+                    }
+                    let name = buffer[curr as usize..offset - 1].iter().collect::<String>();
+
+                    name
+                };
+
+                // Get an iterator that iterates over all parts of the code object.
+                // The parts are basically a field, a variant or a method defined on the previous part.
+                let mut code_object_parts = code_object.split('.');
+
+                // `properties` gives the list of fields, variants and methods defined for the code object in question.
+                let properties = code_object_parts.next().and_then(|symbol| {
+                    code_objects_in_scope
+                        .get(symbol)
+                        .and_then(|def_index| def_index.as_ref())
+                        .and_then(|def_index| {
+                            global_cache
+                                .properties
+                                .get(def_index)
+                                .or_else(|| builtin_methods.get(&def_index.def_type))
+                                .or_else(|| builtin_structs.get(&def_index.def_type))
+                        })
+                });
+                let properties = code_object_parts.fold(properties, |acc, prop| {
+                    acc.and_then(|properties| properties.get(prop))
+                        .and_then(|def_index| def_index.as_ref())
+                        .and_then(|def_index| {
+                            global_cache
+                                .properties
+                                .get(def_index)
+                                .or_else(|| builtin_methods.get(&def_index.def_type))
+                                .or_else(|| builtin_structs.get(&def_index.def_type))
+                        })
+                });
+
+                // Return a list of suggestions using the `properties` extracted previously by converting them into the expected format.
+                properties.map(|properties| {
+                    properties
+                        .keys()
+                        .map(|name| CompletionItem {
+                            label: name.clone(),
+                            ..Default::default()
+                        })
+                        .collect_vec()
+                })
+            }
+            Some(CompletionContext {
+                trigger_kind: CompletionTriggerKind::INVOKED,
+                ..
+            }) => {
+                let suggestions = code_objects_in_scope
+                    .into_keys()
+                    .map(|label| CompletionItem {
+                        label: label.clone(),
+                        ..Default::default()
+                    })
+                    .collect_vec();
+                Some(suggestions)
+            }
+            _ => None,
+        };
+
+        Ok(suggestions.map(CompletionResponse::Array))
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
