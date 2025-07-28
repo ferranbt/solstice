@@ -50,6 +50,21 @@ suite("Extension Test Suite", () => {
     await activate();
   });
 
+  test("Diagnostics", async () => {
+    const uri = getDocUri("diag.sol");
+    await open_document(uri);
+
+    let diagnostics = vscode.languages.getDiagnostics(uri);
+    assert.deepEqual(diagnostics.length, 1);
+
+    let diagnostic = diagnostics[0];
+    assert.strictEqual(diagnostic.severity, vscode.DiagnosticSeverity.Error);
+    assert.strictEqual(diagnostic.message, "'value' not found");
+    assert.strictEqual(diagnostic.source, "solstice");
+    assert.strictEqual(diagnostic.code, "declaration_error");
+    assert.deepStrictEqual(diagnostic.range, new vscode.Range(5, 8, 5, 13));
+  });
+
   test("Hover", async () => {
     const uri = getDocUri("simple.sol");
     const pos1 = new vscode.Position(7, 11);
