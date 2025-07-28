@@ -70,6 +70,52 @@ suite("Extension Test Suite", () => {
     );
   });
 
+  test("Definitions", async () => {
+    const uri = getDocUri("defs.sol");
+    await open_document(uri);
+
+    const pos1 = new vscode.Position(11, 9);
+    const action = (await vscode.commands.executeCommand(
+      "vscode.executeDefinitionProvider",
+      uri,
+      pos1,
+    )) as vscode.Location[];
+
+    assert.deepStrictEqual(action[0].range, new vscode.Range(4, 19, 4, 25));
+  });
+
+  test("References", async () => {
+    const uri = getDocUri("defs.sol");
+    await open_document(uri);
+
+    const pos1 = new vscode.Position(4, 20);
+    const action = (await vscode.commands.executeCommand(
+      "vscode.executeReferenceProvider",
+      uri,
+      pos1,
+    )) as vscode.Location[];
+
+    const expected = [
+      new vscode.Range(4, 19, 4, 25),
+      new vscode.Range(11, 8, 11, 14),
+      new vscode.Range(12, 8, 12, 14),
+      new vscode.Range(17, 15, 17, 21),
+    ];
+
+    assert.strictEqual(
+      action.length,
+      expected.length,
+      "Unexpected number of references found",
+    );
+    for (let i = 0; i < action.length; i++) {
+      assert.deepStrictEqual(
+        action[i].range,
+        expected[i],
+        `Reference at index ${i} does not match expected range`,
+      );
+    }
+  });
+
   test("Rename", async () => {
     const uri = getDocUri("rename.sol");
     await open_document(uri);
@@ -97,8 +143,6 @@ suite("Extension Test Suite", () => {
     for (const testCase of cases) {
       const newName = testCase.new_name;
       const pos1 = testCase.position;
-
-      console.log(`Renaming to: ${newName} at position: ${pos1}`);
 
       const edit = (await vscode.commands.executeCommand(
         "vscode.executeDocumentRenameProvider",
@@ -146,5 +190,25 @@ suite("Extension Test Suite", () => {
     for (let i = 0; i < textedits.length; i++) {
       await vscode.commands.executeCommand("undo");
     }
+  });
+
+  test("Completion", async () => {
+    const uri = getDocUri("completion.sol");
+    await open_document(uri);
+
+    const get_labels = (list: vscode.CompletionList) =>
+      list.items.map((item) => item.label);
+
+    const pos1 = new vscode.Position(14, 10);
+    const completions = (await vscode.commands.executeCommand(
+      "vscode.executeCompletionItemProvider",
+      uri,
+      pos1,
+      ".",
+    )) as vscode.CompletionList;
+
+    const labels = get_labels(completions);
+    assert.ok(labels.includes("setValue"));
+    assert.ok(labels.includes("val"));
   });
 });
