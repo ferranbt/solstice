@@ -11,7 +11,9 @@ use solang::{
         tags::render,
     },
 };
+use solang_parser::diagnostics::ErrorType;
 use solang_parser::pt;
+
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -1947,6 +1949,18 @@ pub fn get_type_definition(ty: &Type) -> Option<DefinitionType> {
         Type::UserType(id) => Some(DefinitionType::UserType(*id)),
         Type::DynamicBytes => Some(DefinitionType::DynamicBytes),
         _ => None,
+    }
+}
+
+pub fn error_type_to_code(error_type: ErrorType) -> String {
+    match error_type {
+        ErrorType::SyntaxError => "syntax_error".to_string(),
+        ErrorType::ParserError => "parser_error".to_string(),
+        ErrorType::DeclarationError => "declaration_error".to_string(),
+        ErrorType::CastError => "cast_error".to_string(),
+        ErrorType::TypeError => "type_error".to_string(),
+        ErrorType::Warning => "warning".to_string(),
+        _ => "unknown_error".to_string(),
     }
 }
 
