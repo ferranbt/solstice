@@ -11,6 +11,7 @@ use solang::sema::builtin::{BUILTIN_FUNCTIONS, BUILTIN_METHODS, BUILTIN_VARIABLE
 use solang::sema::builtin_structs::BUILTIN_STRUCTS;
 use solang::{parse_and_resolve, Target};
 use std::collections::HashMap;
+use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::request::GotoTypeDefinitionResponse;
@@ -20,6 +21,7 @@ use tracer::{execute_command, generate_trace};
 
 use crate::builder::DefinitionType;
 use crate::builder::{Builder, Files, GlobalCache};
+use crate::symbol_indexer::SymbolIndexer;
 use crate::tracer::{DebugTrace, Forge};
 use pprof::protos::Message;
 use std::io::Write;
@@ -31,7 +33,6 @@ use solang_parser::pt;
 use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
 
 use crate::dap::Server as DapServer;
 
@@ -46,6 +47,7 @@ mod dap;
 mod debugger;
 mod metrics;
 mod state;
+mod symbol_indexer;
 mod tracer;
 
 struct Backend {
@@ -54,6 +56,7 @@ struct Backend {
     workspace: Mutex<String>,
     global_cache: Arc<Mutex<GlobalCache>>,
     tx: OnceLock<tokio::sync::mpsc::Sender<ParseRequest>>,
+    symbol_indexer: Arc<SymbolIndexer>,
 }
 
 #[derive(Debug)]
@@ -93,10 +96,12 @@ impl LanguageServer for Backend {
 
         self.tx.get_or_init(|| {
             let (tx, rx) = tokio::sync::mpsc::channel(5);
-            self.spawn_compiler_routine(workspace_path, rx);
+            self.spawn_compiler_routine(workspace_path.clone(), rx);
 
             tx
         });
+
+        self.symbol_indexer.track(PathBuf::from(workspace_path));
 
         Ok(InitializeResult {
             server_info: None,
@@ -118,7 +123,13 @@ impl LanguageServer for Backend {
                     commands: vec!["sol.test.file".to_string(), "sol.debug.file".to_string()],
                     work_done_progress_options: Default::default(),
                 }),
-                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Options(
+                    CodeActionOptions {
+                        code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                        resolve_provider: Some(true),
+                        work_done_progress_options: Default::default(),
+                    },
+                )),
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(true),
                 }),
@@ -416,28 +427,99 @@ impl LanguageServer for Backend {
         Ok(Some(vec![text_edit]))
     }
 
-    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        tracing::info!(
-            "Code action requested for {:?} {:?}",
-            params.text_document.uri,
-            params.range.start.line
-        );
+    async fn code_action_resolve(&self, params: CodeAction) -> Result<CodeAction> {
+        tracing::info!("Do code action resolve: {:?}", params);
 
+        let data = params.data.as_ref().ok_or_else(|| Error {
+            code: ErrorCode::InvalidParams,
+            message: "Code action data is missing".into(),
+            data: None,
+        })?;
+
+        let metadata: CodeActionMetadata = serde_json::from_value(data.clone()).unwrap();
+
+        let mut params = params.clone();
+        params.edit = Some(WorkspaceEdit {
+            changes: Some({
+                let mut changes = std::collections::HashMap::new();
+                changes.insert(
+                    metadata.target_file,
+                    vec![TextEdit {
+                        range: Range {
+                            start: Position {
+                                line: 0,
+                                character: 0,
+                            },
+                            end: Position {
+                                line: 0,
+                                character: 0,
+                            },
+                        },
+                        new_text: format!(
+                            "import {{{}}} from \"{}\";\n",
+                            metadata.unknown_type,
+                            metadata.type_location_file.display(),
+                        ),
+                    }],
+                );
+                changes
+            }),
+            ..Default::default()
+        });
+
+        Ok(params)
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
-        let path = uri.to_file_path().unwrap();
+        let path = uri.clone().to_file_path().unwrap();
+
         if let Some(cache) = self.files.caches.get(&path) {
             if let Some(reference) = cache
                 .unknown_types
                 .iter()
                 .find(|(loc, _)| loc.start == params.range.start)
-            // TODO (end)
+            // TODO (check end of range too)
             {
-                // Now we have to find a type with the name 'unknown_type'
                 let unknown_type = &reference.1;
-                tracing::info!("Unknown type found: {:?}", unknown_type);
 
-                let top_level_types = &self.global_cache.lock().await.top_level_code_objects;
-                tracing::info!("Top level types: {:?}", top_level_types);
+                if let Some(symbol_locations) =
+                    self.symbol_indexer.find_symbol_locations(&unknown_type)
+                {
+                    let mut actions = Vec::new();
+
+                    for location in symbol_locations {
+                        let metadata = CodeActionMetadata {
+                            unknown_type: unknown_type.clone(),
+                            type_location_file: location.file_path.clone(),
+                            target_file: uri.clone(),
+                        };
+
+                        // Create the code action
+                        let action = CodeAction {
+                            title: format!(
+                                "Import {} from {}",
+                                unknown_type,
+                                location.file_path.display()
+                            ),
+                            kind: Some(CodeActionKind::QUICKFIX),
+                            is_preferred: Some(true),
+                            data: Some(serde_json::to_value(metadata).unwrap()),
+                            ..Default::default()
+                        };
+
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
+
+                    if !actions.is_empty() {
+                        tracing::info!(
+                            "🚀 LSP Server sending actions: {}",
+                            serde_json::to_string_pretty(&actions).unwrap()
+                        );
+
+                        return Ok(Some(actions));
+                    }
+                }
             }
         }
 
@@ -701,6 +783,13 @@ impl LanguageServer for Backend {
 
         Ok(None)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CodeActionMetadata {
+    unknown_type: String,
+    type_location_file: PathBuf,
+    target_file: Url,
 }
 
 const TEMP_FORGE_DUMP_PATH: &str = "/tmp/debug_trace.json";
@@ -1153,6 +1242,7 @@ impl Cli {
                     workspace: Mutex::new(String::new()),
                     global_cache: Arc::new(Mutex::new(Default::default())),
                     tx: OnceLock::new(),
+                    symbol_indexer: Arc::new(SymbolIndexer::new()),
                 })
                 .finish();
 

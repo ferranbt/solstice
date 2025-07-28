@@ -22,6 +22,7 @@ import * as path from "path";
 import axios from "axios";
 import { extract } from "tar";
 import { execSync } from "child_process";
+import { createMiddleware } from './middleware';
 
 import {
   Executable,
@@ -29,13 +30,15 @@ import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
+  CodeAction,
+  CodeActionResolveRequest,
 } from "vscode-languageclient/node";
 
 let client: LanguageClient;
 
 const outputChannel2 = vscode.window.createOutputChannel("Solstice");
 
-function consoleLog(...args: (string | number | boolean | object)[]) {
+export function consoleLog(...args: (string | number | boolean | object)[]) {
   outputChannel2.appendLine(args.join(" "));
 }
 
@@ -123,6 +126,43 @@ export async function activate(context: ExtensionContext) {
     },
   };
 
+  const showImportPicker = vscode.commands.registerCommand(
+    'solidity.showImportPicker',
+    async (actions: { label: string; arguments: CodeAction }[]) => {
+      consoleLog(`🎯 Import picker called with ${actions.length} options`);
+
+      const selected = await vscode.window.showQuickPick(actions, {
+        placeHolder: 'Choose import source:',
+        matchOnDescription: true
+      });
+
+      consoleLog("This is what was selected:", JSON.stringify(selected, null, 2));
+
+      if (!selected) {
+        consoleLog('User did not select any import option');
+        return;
+      }
+
+      // Resolve the code action with this params
+      // Remove the command to avoid recursion
+      let params = selected.arguments as CodeAction;
+      // params.command = undefined;
+
+      consoleLog('📤 Params to resolve:', JSON.stringify(params, null, 2));
+
+      const resolvedAction = await client.sendRequest(CodeActionResolveRequest.type, params) as CodeAction;
+      if (!resolvedAction.edit) {
+        consoleLog('❌ No edit returned from resolve');
+        return;
+      }
+
+      const workspaceEdit = await client.protocol2CodeConverter.asWorkspaceEdit(resolvedAction.edit);
+      const success = await vscode.workspace.applyEdit(workspaceEdit);
+
+      consoleLog(`Applied workspace edit: ${success}`);
+    }
+  );
+
   const serverOptions: ServerOptions = {
     run,
     debug: run,
@@ -133,6 +173,11 @@ export async function activate(context: ExtensionContext) {
   const clientOptions: LanguageClientOptions = {
     // Register the server for plain text documents
     documentSelector: [{ scheme: "file", language: "sol" }],
+    middleware: createMiddleware(),
+    initializationFailedHandler: (error) => {
+      consoleLog("Initialization failed:", error);
+      return false;
+    },
     synchronize: {
       // Notify the server about file changes to '.clientrc files contained in the workspace
       fileEvents: workspace.createFileSystemWatcher("**/.clientrc"),
@@ -176,6 +221,9 @@ export async function activate(context: ExtensionContext) {
     vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], params);
   });
 
+  // add commands
+  context.subscriptions.push(showImportPicker, client);
+
   client.start();
 }
 
@@ -187,8 +235,7 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 class MockDebugAdapterNamedPipeServerDescriptorFactory
-  implements vscode.DebugAdapterDescriptorFactory
-{
+  implements vscode.DebugAdapterDescriptorFactory {
   private _server?: Net.Server;
 
   createDebugAdapterDescriptor(

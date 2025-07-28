@@ -1489,8 +1489,6 @@ impl<'a> Builder<'a> {
         }
 
         for (ci, contract) in self.ns.contracts.iter().enumerate() {
-            tracing::info!("Parsing contract: {}", contract.id);
-
             for base in &contract.bases {
                 let file_no = base.loc.file_no();
                 self.hovers.push((
@@ -1685,12 +1683,6 @@ impl<'a> Builder<'a> {
                 },
             ));
 
-            tracing::info!(
-                "Store contract name: {} with def_index: {:?}",
-                contract.id.name,
-                contract_def_index
-            );
-
             // Contracts can't be defined within other contracts.
             // So all the contracts are top level objects in a file.
             self.top_level_code_objects.push((
@@ -1796,8 +1788,6 @@ impl<'a> Builder<'a> {
                 }
             })
             .collect::<Vec<(usize, Range, String)>>();
-
-        tracing::info!("Unknown types: {:?}", unknown_type_diag);
 
         let file_caches = self
             .ns
