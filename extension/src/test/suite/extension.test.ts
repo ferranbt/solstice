@@ -54,10 +54,10 @@ suite("Extension Test Suite", () => {
     const uri = getDocUri("diag.sol");
     await open_document(uri);
 
-    let diagnostics = vscode.languages.getDiagnostics(uri);
+    const diagnostics = vscode.languages.getDiagnostics(uri);
     assert.deepEqual(diagnostics.length, 1);
 
-    let diagnostic = diagnostics[0];
+    const diagnostic = diagnostics[0];
     assert.strictEqual(diagnostic.severity, vscode.DiagnosticSeverity.Error);
     assert.strictEqual(diagnostic.message, "'value' not found");
     assert.strictEqual(diagnostic.source, "solstice");
