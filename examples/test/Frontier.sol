@@ -15,7 +15,7 @@ contract FooTest is Test {
         if (value < 10) {
             value = value + 1 + 1;
         }
-        Exampldde memory example = Example({value_storage: value});
+        Example memory example = Example({value_storage: value});
         value_storage = 1;
         value_storage = 2;
         value_storage = 3;
