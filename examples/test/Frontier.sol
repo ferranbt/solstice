@@ -1,4 +1,5 @@
-import {Parent} from "/Users/ferranbt/go/src/github.com/ferranbt/solstice/examples/src/Parent.sol";
+import {Parent} from "../src/Parent.sol";
+import {Frontier} from "../src/Frontier.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract FooTest is Test {

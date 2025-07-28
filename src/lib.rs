@@ -498,17 +498,13 @@ impl LanguageServer for Backend {
 
                         let metadata = CodeActionMetadata {
                             unknown_type: unknown_type.clone(),
-                            import_location: res,
+                            import_location: res.clone(),
                             target_file: uri.clone(),
                         };
 
                         // Create the code action
                         let action = CodeAction {
-                            title: format!(
-                                "Import {} from {}",
-                                unknown_type,
-                                location.file_path.display()
-                            ),
+                            title: format!("Import {} from {}", unknown_type, res.display()),
                             kind: Some(CodeActionKind::QUICKFIX),
                             is_preferred: Some(true),
                             data: Some(serde_json::to_value(metadata).unwrap()),
