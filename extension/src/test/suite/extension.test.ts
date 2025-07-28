@@ -232,14 +232,12 @@ suite("Extension Test Suite", () => {
     assert.deepStrictEqual(test_lens.range, position);
 
     // Execute the test command
-    const result = await vscode.commands.executeCommand(
+    // If the command does not exists or it fails, the test call will fail
+    // As of now, the commands do not return any value we can validate.
+    await vscode.commands.executeCommand(
       test_lens.command.command,
       ...test_lens.command.arguments,
     );
-
-    // for now lets validate that something is running since the testFixtures
-    // are not full fledged workspaces
-    assert.ok(result != undefined);
   });
 
   test("Codelens debug", async () => {
@@ -261,13 +259,9 @@ suite("Extension Test Suite", () => {
     assert.strictEqual(debug_lens.command.command, "sol.debug.file");
     assert.deepStrictEqual(debug_lens.range, position);
 
-    const result = await vscode.commands.executeCommand(
+    await vscode.commands.executeCommand(
       debug_lens.command.command,
       ...debug_lens.command.arguments,
     );
-
-    // for now lets validate that something is running since the testFixtures
-    // are not full fledged workspaces
-    assert.ok(result != undefined);
   });
 });
