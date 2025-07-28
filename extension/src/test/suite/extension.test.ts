@@ -1,7 +1,6 @@
 import * as assert from "assert";
 import * as vscode from "vscode";
 import * as path from "path";
-import { code } from "tar/dist/commonjs/types";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -225,15 +224,15 @@ suite("Extension Test Suite", () => {
 
     assert.strictEqual(codeLenses.length, 2);
 
-    let position = new vscode.Range(4, 13, 4, 27);
+    const position = new vscode.Range(4, 13, 4, 27);
 
-    let test_lens = codeLenses[0];
+    const test_lens = codeLenses[0];
     assert.strictEqual(test_lens.command.title, "run test");
     assert.strictEqual(test_lens.command.command, "sol.test.file");
     assert.deepStrictEqual(test_lens.range, position);
 
     // Execute the test command
-    let result = await vscode.commands.executeCommand(
+    const result = await vscode.commands.executeCommand(
       test_lens.command.command,
       ...test_lens.command.arguments,
     );
@@ -255,14 +254,14 @@ suite("Extension Test Suite", () => {
 
     assert.strictEqual(codeLenses.length, 2);
 
-    let position = new vscode.Range(4, 13, 4, 27);
+    const position = new vscode.Range(4, 13, 4, 27);
 
-    let debug_lens = codeLenses[1];
+    const debug_lens = codeLenses[1];
     assert.strictEqual(debug_lens.command.title, "debug test");
     assert.strictEqual(debug_lens.command.command, "sol.debug.file");
     assert.deepStrictEqual(debug_lens.range, position);
 
-    let result = await vscode.commands.executeCommand(
+    const result = await vscode.commands.executeCommand(
       debug_lens.command.command,
       ...debug_lens.command.arguments,
     );
