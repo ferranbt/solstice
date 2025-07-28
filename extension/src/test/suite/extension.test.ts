@@ -226,4 +226,57 @@ suite("Extension Test Suite", () => {
     assert.ok(labels.includes("setValue"));
     assert.ok(labels.includes("val"));
   });
+
+  test("Codelens test", async () => {
+    // Code lens exist for functions that start with test_
+    const uri = getDocUri("test.sol");
+    await open_document(uri);
+
+    const codeLenses = (await vscode.commands.executeCommand(
+      "vscode.executeCodeLensProvider",
+      uri,
+    )) as vscode.CodeLens[];
+
+    assert.strictEqual(codeLenses.length, 2);
+
+    const position = new vscode.Range(4, 13, 4, 27);
+
+    const test_lens = codeLenses[0];
+    assert.strictEqual(test_lens.command.title, "run test");
+    assert.strictEqual(test_lens.command.command, "sol.test.file");
+    assert.deepStrictEqual(test_lens.range, position);
+
+    // Execute the test command
+    // If the command does not exists or it fails, the test call will fail
+    // As of now, the commands do not return any value we can validate.
+    await vscode.commands.executeCommand(
+      test_lens.command.command,
+      ...test_lens.command.arguments,
+    );
+  });
+
+  test("Codelens debug", async () => {
+    // Code lens exist for functions that start with test_
+    const uri = getDocUri("test.sol");
+    await open_document(uri);
+
+    const codeLenses = (await vscode.commands.executeCommand(
+      "vscode.executeCodeLensProvider",
+      uri,
+    )) as vscode.CodeLens[];
+
+    assert.strictEqual(codeLenses.length, 2);
+
+    const position = new vscode.Range(4, 13, 4, 27);
+
+    const debug_lens = codeLenses[1];
+    assert.strictEqual(debug_lens.command.title, "debug test");
+    assert.strictEqual(debug_lens.command.command, "sol.debug.file");
+    assert.deepStrictEqual(debug_lens.range, position);
+
+    await vscode.commands.executeCommand(
+      debug_lens.command.command,
+      ...debug_lens.command.arguments,
+    );
+  });
 });
