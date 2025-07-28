@@ -4751,6 +4751,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e91099d4268b0e11973f036e885d652fb0b21fedcf69738c627f94db6a44f42"
 
 [[package]]
+name = "pathdiff"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
+
+[[package]]
 name = "pbkdf2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6693,7 +6699,7 @@ dependencies = [
  "indexmap 2.9.0",
  "ink_env",
  "ink_metadata",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "normalize-path",
  "num-bigint",
  "num-integer",
@@ -6912,6 +6918,7 @@ dependencies = [
  "log",
  "lsp-types 0.97.0",
  "num-traits",
+ "pathdiff",
  "pprof",
  "rand 0.8.5",
  "rayon",

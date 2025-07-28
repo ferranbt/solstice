@@ -458,7 +458,7 @@ impl LanguageServer for Backend {
                         new_text: format!(
                             "import {{{}}} from \"{}\";\n",
                             metadata.unknown_type,
-                            metadata.type_location_file.display(),
+                            metadata.import_location.display(),
                         ),
                     }],
                 );
@@ -489,9 +489,16 @@ impl LanguageServer for Backend {
                     let mut actions = Vec::new();
 
                     for location in symbol_locations {
+                        // we need to create an import location from the uri path to the location.file_path
+                        let res = pathdiff::diff_paths(
+                            location.clone().file_path,
+                            path.parent().expect("parent"),
+                        )
+                        .expect("Failed to compute relative path");
+
                         let metadata = CodeActionMetadata {
                             unknown_type: unknown_type.clone(),
-                            type_location_file: location.file_path.clone(),
+                            import_location: res,
                             target_file: uri.clone(),
                         };
 
@@ -788,7 +795,7 @@ impl LanguageServer for Backend {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CodeActionMetadata {
     unknown_type: String,
-    type_location_file: PathBuf,
+    import_location: PathBuf,
     target_file: Url,
 }
 

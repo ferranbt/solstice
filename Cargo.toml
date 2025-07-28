@@ -63,6 +63,7 @@ slice-group-by = "0.3.1"
 shellexpand = "3.1.1"
 pprof = { version = "0.15.0", features = ["flamegraph", "frame-pointer", "prost-codec"] }
 regex = "1.10"
+pathdiff = "0.2"
 
 [build-dependencies]
 built = { version = "0.7.1", features = ["git2", "chrono"] }

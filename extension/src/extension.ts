@@ -162,6 +162,7 @@ export async function activate(context: ExtensionContext) {
       consoleLog(`Applied workspace edit: ${success}`);
     }
   );
+  context.subscriptions.push(showImportPicker);
 
   const serverOptions: ServerOptions = {
     run,
@@ -221,9 +222,7 @@ export async function activate(context: ExtensionContext) {
     vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], params);
   });
 
-  // add commands
-  context.subscriptions.push(showImportPicker, client);
-
+  context.subscriptions.push(client);
   client.start();
 }
 

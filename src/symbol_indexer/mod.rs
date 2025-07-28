@@ -9,7 +9,6 @@ mod parser;
 #[derive(Debug, Clone)]
 pub struct SymbolLocation {
     pub file_path: PathBuf,
-    pub line: usize,
 }
 
 pub struct SymbolIndexer {
@@ -78,7 +77,6 @@ impl SymbolIndexer {
                     .or_insert_with(Vec::new)
                     .push(SymbolLocation {
                         file_path: file_path.clone(),
-                        line: symbol.line,
                     });
             }
         }

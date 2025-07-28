@@ -124,7 +124,6 @@ pub struct GlobalCache {
     pub declarations: Declarations,
     pub implementations: Implementations,
     pub properties: Properties,
-    pub top_level_code_objects: Vec<(usize, (String, Option<DefinitionIndex>))>,
 }
 
 impl GlobalCache {
@@ -1875,7 +1874,6 @@ impl<'a> Builder<'a> {
             declarations: self.declarations,
             implementations: self.implementations,
             properties: self.properties,
-            top_level_code_objects: self.top_level_code_objects,
         };
 
         (file_caches, global_cache)

@@ -3,7 +3,6 @@ use regex::Regex;
 #[derive(Debug, Clone)]
 pub struct ExtractedSymbol {
     pub name: String,
-    pub line: usize,
 }
 
 pub struct ContractParser {
@@ -25,15 +24,10 @@ impl ContractParser {
         let mut contracts = Vec::new();
 
         for capture in self.contract_regex.captures_iter(content) {
-            let full_match = capture.get(0).unwrap();
             let contract_name = capture.get(2).unwrap(); // Contract name
-
-            // Calculate line number (0-indexed)
-            let line_number = content[..full_match.start()].lines().count();
 
             contracts.push(ExtractedSymbol {
                 name: contract_name.as_str().to_string(),
-                line: line_number,
             });
         }
 
@@ -58,7 +52,6 @@ mod tests {
 
         assert_eq!(contracts.len(), 1);
         assert_eq!(contracts[0].name, "MyContract");
-        assert_eq!(contracts[0].line, 0);
     }
 
     #[test]
@@ -163,26 +156,5 @@ contract AnotherContract {
 
         assert_eq!(contracts.len(), 1);
         assert_eq!(contracts[0].name, "SimpleContract");
-    }
-
-    #[test]
-    fn test_line_numbers() {
-        let parser = test_parser();
-        let content = r#"// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
-
-contract FirstContract {
-    uint256 value;
-}
-
-contract SecondContract {
-    uint256 balance;
-}"#;
-
-        let contracts = parser.extract_contracts(content);
-
-        assert_eq!(contracts.len(), 2);
-        assert_eq!(contracts[0].line, 2); // FirstContract on line 3 (0-indexed line 2)
-        assert_eq!(contracts[1].line, 6); // SecondContract on line 7 (0-indexed line 6)
     }
 }
