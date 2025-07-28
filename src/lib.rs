@@ -1,4 +1,4 @@
-use builder::{get_type_definition, DefinitionIndex};
+use builder::{error_type_to_code, get_type_definition, DefinitionIndex};
 use built_info::PKG_VERSION;
 use clap::{Args, Parser, Subcommand};
 use debugger::DapDebugger;
@@ -858,6 +858,8 @@ impl Backend {
                             return None;
                         }
 
+                        let diag_ty = diag.ty.clone();
+
                         let severity = match diag.level {
                             ast::Level::Info => Some(DiagnosticSeverity::INFORMATION),
                             ast::Level::Warning => Some(DiagnosticSeverity::WARNING),
@@ -897,6 +899,8 @@ impl Backend {
                             message: diag.message.to_string(),
                             severity,
                             related_information,
+                            code: Some(NumberOrString::String(error_type_to_code(diag_ty))),
+                            source: Some("solstice".to_string()),
                             ..Default::default()
                         })
                     }));
