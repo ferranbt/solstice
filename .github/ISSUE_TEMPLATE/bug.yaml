@@ -1,0 +1,71 @@
+name: Bug Report
+description: Create a bug report
+labels: [bug]
+body:
+ - type: markdown
+   attributes:
+     value: |
+       Thanks for taking the time to fill out this bug report!
+
+ - type: textarea
+   id: bug-description
+   attributes:
+     label: Bug Description
+     description: A clear and concise description of what the bug is.
+     placeholder: Tell us what happened!
+   validations:
+     required: true
+
+ - type: textarea
+   id: steps-to-reproduce
+   attributes:
+     label: Steps to Reproduce
+     description: Tell us how to reproduce this behavior
+     placeholder: |
+       1. Go to '...'
+       2. Click on '....'
+       3. Scroll down to '....'
+       4. See error
+   validations:
+     required: true
+
+ - type: dropdown
+   id: operating-system
+   attributes:
+     label: Operating System
+     description: What operating system and architecture are you using?
+     options:
+       - Linux (x86)
+       - Linux (ARM)
+       - Mac (Intel)
+       - Mac (Apple Silicon)
+       - Windows (x86)
+       - Windows (ARM)
+   validations:
+     required: true
+
+ - type: input
+   id: solstice-version
+   attributes:
+     label: Solstice Version
+     description: What version of Solstice are you running?
+     placeholder: e.g., v0.1.0, main branch, development build
+   validations:
+     required: true
+
+ - type: checkboxes
+   id: tracer-error
+   attributes:
+     label: Tracer Related
+     description: Is this error related to the tracer functionality?
+     options:
+       - label: This error is related to the tracer
+
+ - type: textarea
+   id: logs
+   attributes:
+     label: Screenshots or Logs
+     description: If applicable, add screenshots, error messages, or log output
+     render: shell
+     placeholder: |
+       [Paste any relevant logs or error messages here]
