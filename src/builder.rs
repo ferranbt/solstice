@@ -1857,7 +1857,7 @@ impl<'a> Builder<'a> {
                 unknown_types: unknown_type_diag
                     .iter()
                     .filter(|(file_no, _, _)| *file_no == i)
-                    .map(|(_, loc, type_name)| (loc.clone(), type_name.clone()))
+                    .map(|(_, loc, type_name)| (loc, type_name.clone()))
                     .collect(),
             })
             .collect();
