@@ -129,37 +129,23 @@ export async function activate(context: ExtensionContext) {
   const showImportPicker = vscode.commands.registerCommand(
     'solidity.showImportPicker',
     async (actions: { label: string; arguments: CodeAction }[]) => {
-      consoleLog(`🎯 Import picker called with ${actions.length} options`);
-
       const selected = await vscode.window.showQuickPick(actions, {
         placeHolder: 'Choose import source:',
         matchOnDescription: true
       });
 
-      consoleLog("This is what was selected:", JSON.stringify(selected, null, 2));
-
       if (!selected) {
-        consoleLog('User did not select any import option');
         return;
       }
 
-      // Resolve the code action with this params
-      // Remove the command to avoid recursion
       let params = selected.arguments as CodeAction;
-      // params.command = undefined;
-
-      consoleLog('📤 Params to resolve:', JSON.stringify(params, null, 2));
-
       const resolvedAction = await client.sendRequest(CodeActionResolveRequest.type, params) as CodeAction;
       if (!resolvedAction.edit) {
-        consoleLog('❌ No edit returned from resolve');
         return;
       }
 
       const workspaceEdit = await client.protocol2CodeConverter.asWorkspaceEdit(resolvedAction.edit);
-      const success = await vscode.workspace.applyEdit(workspaceEdit);
-
-      consoleLog(`Applied workspace edit: ${success}`);
+      await vscode.workspace.applyEdit(workspaceEdit);
     }
   );
   context.subscriptions.push(showImportPicker);
