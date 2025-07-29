@@ -515,11 +515,6 @@ impl LanguageServer for Backend {
                     }
 
                     if !actions.is_empty() {
-                        tracing::info!(
-                            "🚀 LSP Server sending actions: {}",
-                            serde_json::to_string_pretty(&actions).unwrap()
-                        );
-
                         return Ok(Some(actions));
                     }
                 }
