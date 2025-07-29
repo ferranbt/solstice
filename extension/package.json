@@ -11,6 +11,7 @@
     "tracing",
     "debugging"
   ],
+  "icon": "icon.png",
   "publisher": "ferranborreguero",
   "repository": {
     "url": "https://github.com/ferranbt/solstice",
