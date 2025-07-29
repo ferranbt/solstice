@@ -474,18 +474,25 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         let path = uri.clone().to_file_path().unwrap();
 
+        tracing::info!("Code actions requested for: {}", path.display());
+        tracing::info!("Range requested: {:?}", params.range);
+
         if let Some(cache) = self.files.caches.get(&path) {
+            tracing::info!("Cache unknown types: {:?}", params.context.only);
+
             if let Some(reference) = cache
                 .unknown_types
                 .iter()
                 .find(|(loc, _)| loc.start == params.range.start)
             // TODO (check end of range too)
             {
+                tracing::info!("Found type: {:?}", reference.1);
                 let unknown_type = &reference.1;
 
                 if let Some(symbol_locations) =
                     self.symbol_indexer.find_symbol_locations(&unknown_type)
                 {
+                    tracing::info!("Found symbol locations: {:?}", symbol_locations);
                     let mut actions = Vec::new();
 
                     for location in symbol_locations {
@@ -1026,6 +1033,12 @@ impl Backend {
 
                     for (f, c) in ns.files.iter().zip(file_caches.into_iter()) {
                         if f.cache_no.is_some() {
+                            tracing::info!(
+                                "Update file stage {:?} {:?}",
+                                f.path.display(),
+                                c.unknown_types
+                            );
+
                             files.caches.insert(f.path.clone(), c);
                         }
                     }

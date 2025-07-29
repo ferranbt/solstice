@@ -226,4 +226,31 @@ suite("Extension Test Suite", () => {
     assert.ok(labels.includes("setValue"));
     assert.ok(labels.includes("val"));
   });
+
+  test("Auto import", async () => {
+    const uri = getDocUri("autoimport.sol");
+    await open_document(uri);
+
+    const pos1 = new vscode.Range(5, 8, 5, 14);
+    const action1 = (await vscode.commands.executeCommand(
+      "vscode.executeCodeActionProvider",
+      uri,
+      pos1,
+    )) as (vscode.Command | vscode.CodeAction)[];
+
+    // imports are grouped, so we expect one action
+    assert.strictEqual(action1.length, 1);
+    assert.strictEqual(action1[0].title, "Import... (2 options)");
+
+    const pos2 = new vscode.Range(9, 8, 9, 19);
+    const action2 = (await vscode.commands.executeCommand(
+      "vscode.executeCodeActionProvider",
+      uri,
+      pos2,
+    )) as (vscode.Command | vscode.CodeAction)[];
+
+    // imports are grouped, so we expect one action
+    assert.strictEqual(action2.length, 1);
+    assert.strictEqual(action2[0].title, "Import Definitions from defs.sol");
+  });
 });

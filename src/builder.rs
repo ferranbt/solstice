@@ -1790,6 +1790,8 @@ impl<'a> Builder<'a> {
             })
             .collect::<Vec<(usize, Range, String)>>();
 
+        tracing::info!("Unknown types: {:?}", unknown_type_diag);
+
         let file_caches = self
             .ns
             .files

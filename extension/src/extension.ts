@@ -22,7 +22,7 @@ import * as path from "path";
 import axios from "axios";
 import { extract } from "tar";
 import { execSync } from "child_process";
-import { createMiddleware } from './middleware';
+import { createMiddleware } from "./middleware";
 
 import {
   Executable,
@@ -127,26 +127,31 @@ export async function activate(context: ExtensionContext) {
   };
 
   const showImportPicker = vscode.commands.registerCommand(
-    'solidity.showImportPicker',
+    "solidity.showImportPicker",
     async (actions: { label: string; arguments: CodeAction }[]) => {
       const selected = await vscode.window.showQuickPick(actions, {
-        placeHolder: 'Choose import source:',
-        matchOnDescription: true
+        placeHolder: "Choose import source:",
+        matchOnDescription: true,
       });
 
       if (!selected) {
         return;
       }
 
-      let params = selected.arguments as CodeAction;
-      const resolvedAction = await client.sendRequest(CodeActionResolveRequest.type, params) as CodeAction;
+      const params = selected.arguments as CodeAction;
+      const resolvedAction = (await client.sendRequest(
+        CodeActionResolveRequest.type,
+        params,
+      )) as CodeAction;
       if (!resolvedAction.edit) {
         return;
       }
 
-      const workspaceEdit = await client.protocol2CodeConverter.asWorkspaceEdit(resolvedAction.edit);
+      const workspaceEdit = await client.protocol2CodeConverter.asWorkspaceEdit(
+        resolvedAction.edit,
+      );
       await vscode.workspace.applyEdit(workspaceEdit);
-    }
+    },
   );
   context.subscriptions.push(showImportPicker);
 
@@ -220,7 +225,8 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 class MockDebugAdapterNamedPipeServerDescriptorFactory
-  implements vscode.DebugAdapterDescriptorFactory {
+  implements vscode.DebugAdapterDescriptorFactory
+{
   private _server?: Net.Server;
 
   createDebugAdapterDescriptor(
