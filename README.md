@@ -1,5 +1,15 @@
 # Solstice
 
+[![CI status](https://github.com/ferranbt/solstice/actions/workflows/test.yaml/badge.svg)][gh-ci]
+[![cargo-lint status](https://github.com/ferranbt/solstice/actions/workflows/lint.yaml/badge.svg)][gh-lint]
+
+**Ambitious Solidity extension for VSCode**
+
+![Solstice banner](./assets/solstice_banner.png)
+
+[gh-ci]: https://github.com/ferranbt/solstice/actions/workflows/test.yaml
+[gh-lint]: https://github.com/ferranbt/solstice/actions/workflows/lint.yaml
+
 Solstice is a VSCode extension for Solidity that adds debugging and execution tracing capabilities. It lets you trace and debug the execution of Solidity tests directly in your editor. The extension provides real-time visualization of contract state, memory, storage, and execution flow, making it easier to understand and troubleshoot smart contract behavior.
 
 The language support in Solstice is forked from the [Solang VSCode extension](https://github.com/hyperledger-solang/solang/tree/main/src/bin/languageserver). This fork maintains all the language features from Solang while adding specialized debugging tools. Long-term, the plan is to migrate to the [Solar](https://github.com/paradigmxyz/solar) parser library when it's production ready.

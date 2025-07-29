@@ -1,16 +1,24 @@
 {
   "name": "solstice-language-server",
   "displayName": "Solstice",
-  "description": "Solc Language Server and Debugger",
+  "description": "Solidity Language Server and Debugger",
   "license": "MIT",
   "version": "0.1.1",
-  "categories": [],
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
   "keywords": [
     "language-server",
     "Solidity",
+    "ethereum",
+    "foundry",
+    "forge",
+    "evm",
     "tracing",
     "debugging"
   ],
+  "icon": "icon.png",
   "publisher": "ferranborreguero",
   "repository": {
     "url": "https://github.com/ferranbt/solstice",
