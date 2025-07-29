@@ -31,7 +31,7 @@ jobs:
             echo "Version mismatch: Cargo.toml has $CARGO_VERSION but tag is $TAG_VERSION_WITHOUT_V"
             exit 1
           fi
-          PACKAGE_JSON_VERSION=$(jq -r '.version' package.json)
+          PACKAGE_JSON_VERSION=$(jq -r '.version' ./extension/package.json)
           if [ "$PACKAGE_JSON_VERSION" != "$TAG_VERSION_WITHOUT_V" ]; then
             echo "Version mismatch: package.json has $PACKAGE_JSON_VERSION but tag is $TAG_VERSION_WITHOUT_V"
             exit 1
