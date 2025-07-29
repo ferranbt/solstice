@@ -22,6 +22,7 @@ import * as path from "path";
 import axios from "axios";
 import { extract } from "tar";
 import { execSync } from "child_process";
+import { createMiddleware } from "./middleware";
 
 import {
   Executable,
@@ -29,13 +30,15 @@ import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
+  CodeAction,
+  CodeActionResolveRequest,
 } from "vscode-languageclient/node";
 
 let client: LanguageClient;
 
 const outputChannel2 = vscode.window.createOutputChannel("Solstice");
 
-function consoleLog(...args: (string | number | boolean | object)[]) {
+export function consoleLog(...args: (string | number | boolean | object)[]) {
   outputChannel2.appendLine(args.join(" "));
 }
 
@@ -123,6 +126,35 @@ export async function activate(context: ExtensionContext) {
     },
   };
 
+  const showImportPicker = vscode.commands.registerCommand(
+    "solidity.showImportPicker",
+    async (actions: { label: string; arguments: CodeAction }[]) => {
+      const selected = await vscode.window.showQuickPick(actions, {
+        placeHolder: "Choose import source:",
+        matchOnDescription: true,
+      });
+
+      if (!selected) {
+        return;
+      }
+
+      const params = selected.arguments as CodeAction;
+      const resolvedAction = (await client.sendRequest(
+        CodeActionResolveRequest.type,
+        params,
+      )) as CodeAction;
+      if (!resolvedAction.edit) {
+        return;
+      }
+
+      const workspaceEdit = await client.protocol2CodeConverter.asWorkspaceEdit(
+        resolvedAction.edit,
+      );
+      await vscode.workspace.applyEdit(workspaceEdit);
+    },
+  );
+  context.subscriptions.push(showImportPicker);
+
   const serverOptions: ServerOptions = {
     run,
     debug: run,
@@ -133,6 +165,11 @@ export async function activate(context: ExtensionContext) {
   const clientOptions: LanguageClientOptions = {
     // Register the server for plain text documents
     documentSelector: [{ scheme: "file", language: "sol" }],
+    middleware: createMiddleware(),
+    initializationFailedHandler: (error) => {
+      consoleLog("Initialization failed:", error);
+      return false;
+    },
     synchronize: {
       // Notify the server about file changes to '.clientrc files contained in the workspace
       fileEvents: workspace.createFileSystemWatcher("**/.clientrc"),
@@ -176,6 +213,7 @@ export async function activate(context: ExtensionContext) {
     vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], params);
   });
 
+  context.subscriptions.push(client);
   client.start();
 }
 

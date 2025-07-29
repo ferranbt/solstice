@@ -1,5 +1,6 @@
-import {Test} from "forge-std/Test.sol";
 import {Parent} from "../src/Parent.sol";
+import {Frontier} from "../src/Frontier.sol";
+import {Test} from "forge-std/Test.sol";
 
 contract FooTest is Test {
     struct Example {
@@ -16,6 +17,8 @@ contract FooTest is Test {
             value = value + 1 + 1;
         }
         Example memory example = Example({value_storage: value});
+        Frontier frontier = new Frontier();
+        Parent parent = new Parent();
         value_storage = 1;
         value_storage = 2;
         value_storage = 3;
