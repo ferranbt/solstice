@@ -246,7 +246,8 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 class MockDebugAdapterNamedPipeServerDescriptorFactory
-  implements vscode.DebugAdapterDescriptorFactory {
+  implements vscode.DebugAdapterDescriptorFactory
+{
   private _server?: Net.Server;
 
   createDebugAdapterDescriptor(
