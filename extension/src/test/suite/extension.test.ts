@@ -2,7 +2,7 @@ import * as assert from "assert";
 import * as vscode from "vscode";
 import * as path from "path";
 
-function sleep(ms: number): Promise<void> {
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -10,11 +10,11 @@ export const getDocPath = (p: string) => {
   return path.resolve(__dirname, "../../../src/testFixtures", p);
 };
 
-function getDocUri(filePath: string): vscode.Uri {
+export function getDocUri(filePath: string): vscode.Uri {
   return vscode.Uri.file(getDocPath(filePath));
 }
 
-async function open_document(
+export async function open_document(
   uri: vscode.Uri,
 ): Promise<vscode.TextDocument | undefined> {
   try {
