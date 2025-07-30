@@ -1,3 +1,4 @@
+use regex::Replacer;
 use tower_lsp::lsp_types::*;
 
 /// Efficiently tracks and applies document changes to positions
@@ -7,6 +8,8 @@ pub struct PositionTracker {
     line_adjustments: Vec<(u32, u32, i32)>,
     /// Character adjustments for same-line changes: (line, after_char, net_char_change)
     char_adjustments: Vec<(u32, u32, i32)>,
+    // Store original replacements for complex cases
+    replacements: Vec<(Range, String)>,
 }
 
 impl PositionTracker {
@@ -14,9 +17,12 @@ impl PositionTracker {
     pub fn new(changes: &[TextDocumentContentChangeEvent]) -> Self {
         let mut line_adjustments = Vec::new();
         let mut char_adjustments = Vec::new();
+        let mut replacements = Vec::new();
 
         for change in changes {
             if let Some(range) = &change.range {
+                replacements.push((range.clone(), change.text.clone()));
+
                 // Calculate line changes
                 let lines_added = change.text.matches('\n').count() as i32;
                 let lines_removed = (range.end.line - range.start.line) as i32;
@@ -54,6 +60,7 @@ impl PositionTracker {
         Self {
             line_adjustments,
             char_adjustments,
+            replacements,
         }
     }
 
@@ -91,8 +98,9 @@ impl PositionTracker {
         let new_line = (new_position.line as i32 + cumulative_line_change).max(0) as u32;
         new_position.line = new_line;
 
-        // Apply character adjustments (only if we're still on the original line)
+        // Apply character adjustments
         if new_position.line == position.line {
+            // Same line adjustments
             let mut cumulative_char_change = 0i32;
             for &(line, after_char, char_change) in &self.char_adjustments {
                 if line == position.line && position.character >= after_char {
@@ -102,6 +110,24 @@ impl PositionTracker {
 
             let new_char = (new_position.character as i32 + cumulative_char_change).max(0) as u32;
             new_position.character = new_char;
+        } else if new_position.line < position.line {
+            // Position moved to an earlier line - handle cross-line replacements
+            for (range, replacement_text) in &self.replacements {
+                if range.start.line == new_position.line && range.end.line == position.line {
+                    // This replacement merged our line
+                    let chars_before_replacement = range.start.character;
+                    let chars_after_removed_part = if position.character > range.end.character {
+                        position.character - range.end.character
+                    } else {
+                        0
+                    };
+
+                    new_position.character = chars_before_replacement
+                        + replacement_text.len() as u32
+                        + chars_after_removed_part;
+                    break;
+                }
+            }
         }
 
         // Validate the result
