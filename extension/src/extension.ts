@@ -42,6 +42,8 @@ export function consoleLog(...args: (string | number | boolean | object)[]) {
   outputChannel2.appendLine(args.join(" "));
 }
 
+const traceOutputChannel = window.createOutputChannel("Solstice");
+
 export async function activate(context: ExtensionContext) {
   consoleLog("Activated");
 
@@ -107,25 +109,6 @@ export async function activate(context: ExtensionContext) {
     ),
   );
 
-  const traceOutputChannel = window.createOutputChannel("Solstice");
-  const command = await getServer();
-
-  const run: Executable = {
-    command,
-    args: ["server"],
-    transport: {
-      // test
-      kind: TransportKind.socket,
-      port: 1111,
-    },
-    options: {
-      env: {
-        ...process.env,
-        RUST_LOG: "debug",
-      },
-    },
-  };
-
   const showImportPicker = vscode.commands.registerCommand(
     "solidity.showImportPicker",
     async (actions: { label: string; arguments: CodeAction }[]) => {
@@ -154,6 +137,44 @@ export async function activate(context: ExtensionContext) {
     },
   );
   context.subscriptions.push(showImportPicker);
+
+  const reinitializeCommand = vscode.commands.registerCommand(
+    "solstice.reinitialize",
+    async () => {
+      consoleLog("Reinitializing Solstice language server...");
+
+      // Stop existing client
+      if (client) {
+        await client.stop();
+      }
+
+      // Start fresh (this will re-run getServer() automatically)
+      await startLanguageClient(context);
+    },
+  );
+  context.subscriptions.push(reinitializeCommand);
+
+  startLanguageClient(context);
+}
+
+async function startLanguageClient(context: ExtensionContext) {
+  const command = await getServer();
+
+  const run: Executable = {
+    command,
+    args: ["server"],
+    transport: {
+      // test
+      kind: TransportKind.socket,
+      port: 1111,
+    },
+    options: {
+      env: {
+        ...process.env,
+        RUST_LOG: "debug",
+      },
+    },
+  };
 
   const serverOptions: ServerOptions = {
     run,
@@ -225,8 +246,7 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 class MockDebugAdapterNamedPipeServerDescriptorFactory
-  implements vscode.DebugAdapterDescriptorFactory
-{
+  implements vscode.DebugAdapterDescriptorFactory {
   private _server?: Net.Server;
 
   createDebugAdapterDescriptor(
@@ -272,13 +292,14 @@ class MockConfigurationProvider implements vscode.DebugConfigurationProvider {
 }
 
 async function getServer(): Promise<string> {
+  const configuration = vscode.workspace.getConfiguration("solstice");
+  consoleLog("Loading configuration:", JSON.stringify(configuration));
+
   // Use process.env.SERVER_PATH in the launch configuration if defined
   if (process.env.SERVER_PATH) {
     consoleLog("Using server path from environment variable SERVER_PATH");
     return process.env.SERVER_PATH;
   }
-
-  const configuration = vscode.workspace.getConfiguration("solstice");
 
   // Try to find the 'solstice' executable workspace configuration
   const serverPath = configuration.get<string>("serverPath");
