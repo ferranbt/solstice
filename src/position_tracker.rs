@@ -1,4 +1,3 @@
-use regex::Replacer;
 use tower_lsp::lsp_types::*;
 
 /// Efficiently tracks and applies document changes to positions
@@ -648,6 +647,30 @@ contract MyContract {
 contract MyContract {
     function call_with_params(uint256 a, uint256 b) private returns (uint256) {→
         return a + b;
+    }
+}"#,
+            )
+            .run();
+    }
+
+    #[test]
+    fn test_newline_after_brace_before_hint() {
+        SolidityTest::new("Insert newline after brace, before hint - hint should stay with brace")
+            .before(
+                r#"
+contract MyContract {
+    function test() external {→
+        return 42;
+    }
+}"#,
+            )
+            .insert_at(1, 31, "\n") // Insert newline right after the "{" but before the hint
+            .after(
+                r#"
+contract MyContract {
+    function test() external {→
+
+        return 42;
     }
 }"#,
             )
