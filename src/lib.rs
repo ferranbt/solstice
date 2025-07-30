@@ -20,6 +20,7 @@ use tracer::{execute_command, generate_trace};
 
 use crate::builder::DefinitionType;
 use crate::builder::{Builder, Files, GlobalCache};
+use crate::position_tracker::PositionTracker;
 use crate::symbol_indexer::SymbolIndexer;
 use crate::tracer::{DebugTrace, Forge};
 use pprof::protos::Message;
@@ -46,6 +47,7 @@ mod builder;
 mod dap;
 mod debugger;
 mod metrics;
+mod position_tracker;
 mod state;
 mod symbol_indexer;
 mod tracer;
@@ -107,7 +109,7 @@ impl LanguageServer for Backend {
             server_info: None,
             offset_encoding: None,
             capabilities: ServerCapabilities {
-                inlay_hint_provider: Some(OneOf::Left(false)),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
@@ -182,8 +184,18 @@ impl LanguageServer for Backend {
 
         match uri.to_file_path() {
             Ok(path) => {
-                self.files.update_partial_text_file(&path, params);
-                self.parse_file(uri, false).await;
+                // Adjust existing hint positions
+                let had_hints = self
+                    .adjust_cached_hints(&path, &params.content_changes)
+                    .await;
+
+                if had_hints {
+                    // Refresh with adjusted positions
+                    self.client.inlay_hint_refresh().await.ok();
+                }
+
+                // self.files.update_partial_text_file(&path, params);
+                // self.parse_file(uri, false).await;
             }
             Err(_) => {
                 self.client
@@ -260,6 +272,29 @@ impl LanguageServer for Backend {
                     }
                 }
             }
+        }
+
+        Ok(None)
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+        let source_path = uri.to_file_path().map_err(|_| Error {
+            code: ErrorCode::InvalidRequest,
+            message: format!("Received invalid URI: {uri}").into(),
+            data: None,
+        })?;
+
+        if let Some(cache) = self.files.caches.get(&source_path) {
+            // check if there is any function in scope
+            let hints = cache
+                .hints
+                .iter()
+                .filter(|hint| self.position_in_range(&hint.position, &params.range))
+                .cloned()
+                .collect();
+
+            return Ok(Some(hints));
         }
 
         Ok(None)
@@ -872,6 +907,13 @@ impl Backend {
         }
     }
 
+    fn position_in_range(&self, position: &Position, range: &Range) -> bool {
+        (position.line > range.start.line
+            || (position.line == range.start.line && position.character >= range.start.character))
+            && (position.line < range.end.line
+                || (position.line == range.end.line && position.character <= range.end.character))
+    }
+
     /// Common code for goto_{definitions, implementations, declarations, type_definitions}
     async fn get_reference_from_params(
         &self,
@@ -900,6 +942,36 @@ impl Backend {
             }
         }
         Ok(None)
+    }
+
+    async fn adjust_cached_hints(
+        &self,
+        uri: &PathBuf,
+        changes: &[TextDocumentContentChangeEvent],
+    ) -> bool {
+        if let Some(mut file_cache) = self.files.caches.get_mut(uri) {
+            // Create position tracker for all changes
+            let tracker = PositionTracker::new(changes);
+
+            // Collect original positions
+            let original_positions: Vec<Position> =
+                file_cache.hints.iter().map(|hint| hint.position).collect();
+
+            // Adjust all positions using the tracker
+            let adjusted_positions = tracker.adjust_positions(original_positions);
+
+            // Update the hints with new positions
+            for (hint, new_position) in file_cache.hints.iter_mut().zip(adjusted_positions.iter()) {
+                hint.position = *new_position;
+            }
+
+            // Remove any hints that became invalid (tracker returns fewer positions)
+            file_cache.hints.truncate(adjusted_positions.len());
+
+            true // We had cached data and updated it
+        } else {
+            false // No cached data for this file
+        }
     }
 
     async fn parse_file(&self, uri: Url, wait: bool) {
@@ -1026,12 +1098,6 @@ impl Backend {
 
                     for (f, c) in ns.files.iter().zip(file_caches.into_iter()) {
                         if f.cache_no.is_some() {
-                            tracing::info!(
-                                "Update file stage {:?} {:?}",
-                                f.path.display(),
-                                c.unknown_types
-                            );
-
                             files.caches.insert(f.path.clone(), c);
                         }
                     }

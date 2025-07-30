@@ -18,7 +18,9 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
-use tower_lsp::lsp_types::{DidChangeTextDocumentParams, TextDocumentContentChangeEvent};
+use tower_lsp::lsp_types::{
+    DidChangeTextDocumentParams, InlayHint, InlayHintLabel, TextDocumentContentChangeEvent,
+};
 use tower_lsp::lsp_types::{Position, Range};
 
 /// Stores information used by language server for every opened file
@@ -104,6 +106,29 @@ pub struct FileCache {
     pub scopes: Lapper<usize, Vec<(String, Option<DefinitionIndex>)>>,
     pub top_level_code_objects: HashMap<String, Option<DefinitionIndex>>,
     pub unknown_types: Vec<(Range, String)>,
+    pub hints: Vec<InlayHint>,
+}
+
+fn func_to_inlay_hint(selector: Vec<u8>, loc: Range) -> InlayHint {
+    // Display the selector at the end of the range
+    let hex_selector = selector
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+
+    InlayHint {
+        position: Position {
+            line: loc.end.line,
+            character: loc.end.character + 2,
+        },
+        label: InlayHintLabel::String(format!(" // selector: {}", hex_selector)),
+        kind: None,
+        text_edits: None,
+        tooltip: None,
+        padding_left: Some(true),
+        padding_right: Some(false),
+        data: None,
+    }
 }
 
 /// Stores information used by the language server to service requests (eg: `Go to Definitions`) received from the client.
@@ -1790,8 +1815,6 @@ impl<'a> Builder<'a> {
             })
             .collect::<Vec<(usize, Range, String)>>();
 
-        tracing::info!("Unknown types: {:?}", unknown_type_diag);
-
         let file_caches = self
             .ns
             .files
@@ -1858,6 +1881,17 @@ impl<'a> Builder<'a> {
                     .iter()
                     .filter(|(file_no, _, _)| *file_no == i)
                     .map(|(_, loc, type_name)| (*loc, type_name.clone()))
+                    .collect(),
+                hints: self
+                    .ns
+                    .functions
+                    .iter()
+                    .filter(|f| f.loc.file_no() == i)
+                    .map(|f| {
+                        let range = loc_to_range(&f.loc_prototype, self.ns.files.get(i).unwrap());
+
+                        func_to_inlay_hint(f.selector(self.ns, &0), range)
+                    })
                     .collect(),
             })
             .collect();
