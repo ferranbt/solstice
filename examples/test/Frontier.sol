@@ -7,7 +7,7 @@ contract FooTest is Test {
         uint256 value_storage;
     }
 
-    uint256 value_storage;
+    uint256 public value_storage;
     Example[2][] second_storage;
 
     function test_Example() external {

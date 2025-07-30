@@ -1,6 +1,7 @@
 use builder::{error_type_to_code, get_type_definition, DefinitionIndex};
 use built_info::PKG_VERSION;
 use clap::{Args, Parser, Subcommand};
+use dashmap::mapref::entry::Entry;
 use debugger::DapDebugger;
 use forge_fmt::fmt;
 use itertools::Itertools;
@@ -18,8 +19,9 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tracer::{execute_command, generate_trace};
 
-use crate::builder::DefinitionType;
 use crate::builder::{Builder, Files, GlobalCache};
+use crate::builder::{DefinitionType, Hints};
+use crate::position_tracker::PositionTracker;
 use crate::symbol_indexer::SymbolIndexer;
 use crate::tracer::{DebugTrace, Forge};
 use pprof::protos::Message;
@@ -46,6 +48,7 @@ mod builder;
 mod dap;
 mod debugger;
 mod metrics;
+mod position_tracker;
 mod state;
 mod symbol_indexer;
 mod tracer;
@@ -107,7 +110,7 @@ impl LanguageServer for Backend {
             server_info: None,
             offset_encoding: None,
             capabilities: ServerCapabilities {
-                inlay_hint_provider: Some(OneOf::Left(false)),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
@@ -161,13 +164,14 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        let version = params.text_document.version;
         let uri = params.text_document.uri;
 
         match uri.to_file_path() {
             Ok(path) => {
                 self.files
                     .update_text_file(&path, params.text_document.text);
-                self.parse_file(uri, true).await;
+                self.parse_file(uri, version, true).await;
             }
             Err(_) => {
                 self.client
@@ -178,12 +182,23 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let version = params.text_document.version;
         let uri = params.text_document.uri.clone();
 
         match uri.to_file_path() {
             Ok(path) => {
+                // Adjust existing hint positions
+                let had_hints = self
+                    .adjust_cached_hints(&path, &params.content_changes, version)
+                    .await;
+
+                if had_hints {
+                    // Refresh with adjusted positions
+                    self.client.inlay_hint_refresh().await.ok();
+                }
+
                 self.files.update_partial_text_file(&path, params);
-                self.parse_file(uri, false).await;
+                self.parse_file(uri, version, false).await;
             }
             Err(_) => {
                 self.client
@@ -195,7 +210,6 @@ impl LanguageServer for Backend {
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         tracing::info!("Saving file");
-
         let uri = params.text_document.uri;
 
         if let Some(text) = params.text {
@@ -204,7 +218,7 @@ impl LanguageServer for Backend {
             }
         }
 
-        self.parse_file(uri, true).await;
+        self.parse_file(uri, i32::MAX, true).await;
     }
 
     async fn did_close(&self, _: DidCloseTextDocumentParams) {
@@ -260,6 +274,28 @@ impl LanguageServer for Backend {
                     }
                 }
             }
+        }
+
+        Ok(None)
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+        let source_path = uri.to_file_path().map_err(|_| Error {
+            code: ErrorCode::InvalidRequest,
+            message: format!("Received invalid URI: {uri}").into(),
+            data: None,
+        })?;
+
+        if let Some(file_hints) = self.files.hints.get(&source_path) {
+            // check if there is any function in scope
+            let valid_hints = file_hints
+                .hints
+                .iter()
+                .filter(|hint| self.position_in_range(&hint.position, &params.range))
+                .cloned()
+                .collect::<Vec<InlayHint>>();
+            return Ok(Some(valid_hints));
         }
 
         Ok(None)
@@ -794,6 +830,7 @@ const TEMP_FORGE_DUMP_PATH: &str = "/tmp/debug_trace.json";
 
 struct ParseRequest {
     url: Url,
+    version: i32,
     response_tx: tokio::sync::oneshot::Sender<()>,
 }
 
@@ -872,6 +909,13 @@ impl Backend {
         }
     }
 
+    fn position_in_range(&self, position: &Position, range: &Range) -> bool {
+        (position.line > range.start.line
+            || (position.line == range.start.line && position.character >= range.start.character))
+            && (position.line < range.end.line
+                || (position.line == range.end.line && position.character <= range.end.character))
+    }
+
     /// Common code for goto_{definitions, implementations, declarations, type_definitions}
     async fn get_reference_from_params(
         &self,
@@ -902,10 +946,43 @@ impl Backend {
         Ok(None)
     }
 
-    async fn parse_file(&self, uri: Url, wait: bool) {
+    async fn adjust_cached_hints(
+        &self,
+        uri: &PathBuf,
+        changes: &[TextDocumentContentChangeEvent],
+        version: i32,
+    ) -> bool {
+        if let Some(mut file_hints) = self.files.hints.get_mut(uri) {
+            // Create position tracker for all changes
+            let tracker = PositionTracker::new(changes);
+
+            // Collect original positions
+            let original_positions: Vec<Position> =
+                file_hints.hints.iter().map(|hint| hint.position).collect();
+
+            // Adjust all positions using the tracker
+            let adjusted_positions = tracker.adjust_positions(original_positions);
+
+            // Update the hints with new positions
+            for (hint, new_position) in file_hints.hints.iter_mut().zip(adjusted_positions.iter()) {
+                hint.position = *new_position;
+            }
+
+            // Remove any hints that became invalid (tracker returns fewer positions)
+            file_hints.hints.truncate(adjusted_positions.len());
+            file_hints.version = version;
+
+            true // We had cached data and updated it
+        } else {
+            false // No cached data for this file
+        }
+    }
+
+    async fn parse_file(&self, uri: Url, version: i32, wait: bool) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let request = ParseRequest {
             url: uri.clone(),
+            version,
             response_tx: tx,
         };
 
@@ -943,7 +1020,11 @@ impl Backend {
 
         tokio::spawn(async move {
             while let Some(req) = rx.recv().await {
-                tracing::info!("Received parse request for: {}", req.url);
+                tracing::info!(
+                    "Received parse request for: {} version {}",
+                    req.url,
+                    req.version
+                );
 
                 let uri = req.url.clone();
 
@@ -1026,11 +1107,26 @@ impl Backend {
 
                     for (f, c) in ns.files.iter().zip(file_caches.into_iter()) {
                         if f.cache_no.is_some() {
-                            tracing::info!(
-                                "Update file stage {:?} {:?}",
-                                f.path.display(),
-                                c.unknown_types
-                            );
+                            // Update the hints only if the same or higher, if it is the same the hints from the parser
+                            // take precedence
+                            // Update hints only if this version is newer or equal
+                            match files.hints.entry(f.path.clone()) {
+                                Entry::Occupied(mut entry) => {
+                                    if req.version >= entry.get().version {
+                                        entry.insert(Hints {
+                                            hints: c.available_hints.clone(),
+                                            version: req.version,
+                                        });
+                                    }
+                                }
+                                Entry::Vacant(entry) => {
+                                    // No existing hints, always insert
+                                    entry.insert(Hints {
+                                        hints: c.available_hints.clone(),
+                                        version: req.version,
+                                    });
+                                }
+                            }
 
                             files.caches.insert(f.path.clone(), c);
                         }
@@ -1044,6 +1140,9 @@ impl Backend {
                     // ask again for code lens because now we do it async so the system might be asking for
                     // code lens before the compilation is done
                     let _ = client.code_lens_refresh().await;
+
+                    // Notify inlay hints
+                    let _ = client.inlay_hint_refresh().await;
 
                     // notify that the compilation routine is done
                     let _ = req.response_tx.send(());
