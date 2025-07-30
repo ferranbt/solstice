@@ -28,6 +28,13 @@ use tower_lsp::lsp_types::{Position, Range};
 pub struct Files {
     pub caches: DashMap<PathBuf, FileCache>,
     pub text_buffers: DashMap<PathBuf, String>,
+    pub hints: DashMap<PathBuf, Hints>,
+}
+
+#[derive(Default)]
+pub struct Hints {
+    pub hints: Vec<InlayHint>,
+    pub version: i32,
 }
 
 impl Files {
@@ -106,7 +113,7 @@ pub struct FileCache {
     pub scopes: Lapper<usize, Vec<(String, Option<DefinitionIndex>)>>,
     pub top_level_code_objects: HashMap<String, Option<DefinitionIndex>>,
     pub unknown_types: Vec<(Range, String)>,
-    pub hints: Vec<InlayHint>,
+    pub available_hints: Vec<InlayHint>,
 }
 
 fn func_to_inlay_hint(selector: Vec<u8>, loc: Range) -> InlayHint {
@@ -1882,7 +1889,7 @@ impl<'a> Builder<'a> {
                     .filter(|(file_no, _, _)| *file_no == i)
                     .map(|(_, loc, type_name)| (*loc, type_name.clone()))
                     .collect(),
-                hints: self
+                available_hints: self
                     .ns
                     .functions
                     .iter()
