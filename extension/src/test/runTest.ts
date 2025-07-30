@@ -19,9 +19,9 @@ async function main() {
       launchArgs: ["--disable-extensions"],
       extensionTestsEnv: {
         ...process.env,
-        SERVER_PATH:
-          process.env.SERVER_PATH ||
-          path.resolve(__dirname, "../../../target/debug/solstice"),
+        //SERVER_PATH:
+        //  process.env.SERVER_PATH ||
+        //  path.resolve(__dirname, "../../../target/debug/solstice"),
       },
     });
   } catch {

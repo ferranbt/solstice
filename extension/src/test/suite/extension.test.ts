@@ -1,6 +1,8 @@
 import * as assert from "assert";
 import * as vscode from "vscode";
 import * as path from "path";
+import * as sinon from "sinon";
+import * as fs from "fs";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -42,6 +44,70 @@ async function activate() {
     console.error("Extension not found");
   }
 }
+
+suite("Download LSP server", () => {
+  let originalServerPath: string | undefined;
+
+  setup(() => {
+    // Save and unset SERVER_PATH before each test
+    originalServerPath = process.env.SERVER_PATH;
+    delete process.env.SERVER_PATH;
+  });
+
+  teardown(() => {
+    // Restore SERVER_PATH after each test
+    if (originalServerPath !== undefined) {
+      process.env.SERVER_PATH = originalServerPath;
+    }
+  });
+
+  test("Download and check server", async () => {
+    // Set up stub to auto-click "Install" when modal appears
+    const installStub = sinon.stub(vscode.window, "showInformationMessage");
+    installStub.resolves("Install"); // Auto-click "Install"
+
+    // generate a temporal folder to store the solstice path
+    const tmpDir = path.join(__dirname, "tmp");
+
+    const config = vscode.workspace.getConfiguration("solstice");
+    await config.update(
+      "solsticePath",
+      tmpDir,
+      vscode.ConfigurationTarget.Global,
+    );
+
+    const uri = getDocUri("diag.sol");
+    await open_document(uri);
+
+    // verify the modal was shown
+    assert.strictEqual(installStub.callCount, 1);
+    const call = installStub.firstCall;
+    const message = call.args[0];
+    assert.ok(message.startsWith("Install Solstice"));
+
+    // verify the solstice LSP binary was downloaded
+    const solsticeBinPath = path.join(tmpDir, ".solstice", "solstice");
+    assert.ok(
+      fs.existsSync(solsticeBinPath),
+      "Solstice binary was not downloaded",
+    );
+
+    // Wait for the extension to finish setup and check if the extension got activated
+    await sleep(2000);
+    const diagnostics = vscode.languages.getDiagnostics(uri);
+    assert.deepEqual(diagnostics.length, 1);
+
+    installStub.restore();
+
+    // delete the temporary directory and reset the solstice Path
+    fs.rmdirSync(tmpDir, { recursive: true });
+    await config.update(
+      "solsticePath",
+      undefined,
+      vscode.ConfigurationTarget.Global,
+    );
+  });
+});
 
 suite("Extension Test Suite", () => {
   vscode.window.showInformationMessage("Start all tests.");

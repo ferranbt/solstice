@@ -278,10 +278,10 @@ async function getServer(): Promise<string> {
     return process.env.SERVER_PATH;
   }
 
+  const configuration = vscode.workspace.getConfiguration("solstice");
+
   // Try to find the 'solstice' executable workspace configuration
-  const serverPath = vscode.workspace
-    .getConfiguration("solstice")
-    .get<string>("serverPath");
+  const serverPath = configuration.get<string>("serverPath");
   if (serverPath) {
     consoleLog("Using server path from workspace configuration");
     return serverPath;
@@ -298,7 +298,7 @@ async function getServer(): Promise<string> {
   consoleLog("Remote solstice version", latestVersion);
 
   // Try to find the 'solstice' executable in the $HOME/.solstice directory
-  const home = os.homedir();
+  const home = configuration.get<string>("solsticePath") || os.homedir();
 
   const solsticePath = path.join(home, ".solstice", "solstice");
   if (executableFileExists(solsticePath)) {
