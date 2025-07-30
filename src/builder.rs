@@ -5,7 +5,7 @@ use rust_lapper::{Interval, Lapper};
 use solang::{
     codegen::{self, Expression},
     sema::{
-        ast::{self, RetrieveType, StructType, Type},
+        ast::{self, RetrieveType, Statement, StructType, Type},
         builtin::get_prototype,
         symtable,
         tags::render,
@@ -116,6 +116,25 @@ pub struct FileCache {
     pub available_hints: Vec<InlayHint>,
 }
 
+const END_OF_BLOCK_HINT_MIN_LINES: u32 = 10;
+
+fn end_of_block_hint(func_name: String, loc: Range) -> InlayHint {
+    // Display the function name at the end of the range
+    InlayHint {
+        position: Position {
+            line: loc.end.line,
+            character: loc.end.character,
+        },
+        label: InlayHintLabel::String(format!("fn {func_name}")),
+        kind: None,
+        text_edits: None,
+        tooltip: None,
+        padding_left: Some(true),
+        padding_right: Some(false),
+        data: None,
+    }
+}
+
 fn func_to_inlay_hint(selector: Vec<u8>, loc: Range) -> InlayHint {
     // Display the selector at the end of the range
     let hex_selector = selector
@@ -128,7 +147,7 @@ fn func_to_inlay_hint(selector: Vec<u8>, loc: Range) -> InlayHint {
             line: loc.end.line,
             character: loc.end.character + 2,
         },
-        label: InlayHintLabel::String(format!(" // selector: {hex_selector}")),
+        label: InlayHintLabel::String(format!("selector: {hex_selector}")),
         kind: None,
         text_edits: None,
         tooltip: None,
@@ -1894,10 +1913,24 @@ impl<'a> Builder<'a> {
                     .functions
                     .iter()
                     .filter(|f| f.loc.file_no() == i)
-                    .map(|f| {
-                        let range = loc_to_range(&f.loc_prototype, self.ns.files.get(i).unwrap());
+                    .flat_map(|f| {
+                        let mut hints = vec![];
 
-                        func_to_inlay_hint(f.selector(self.ns, &0), range)
+                        // hint for end of function
+                        if let Some(Statement::Block { loc, .. }) = f.body.first() {
+                            let loc_range = loc_to_range(loc, self.ns.files.get(i).unwrap());
+                            if loc_range.end.line - loc_range.start.line
+                                >= END_OF_BLOCK_HINT_MIN_LINES
+                            {
+                                hints.push(end_of_block_hint(f.mangled_name.clone(), loc_range));
+                            }
+                        }
+
+                        // hint for function selector
+                        let range = loc_to_range(&f.loc_prototype, self.ns.files.get(i).unwrap());
+                        hints.push(func_to_inlay_hint(f.selector(self.ns, &0), range));
+
+                        hints
                     })
                     .collect(),
             })
