@@ -120,7 +120,7 @@ fn func_to_inlay_hint(selector: Vec<u8>, loc: Range) -> InlayHint {
     // Display the selector at the end of the range
     let hex_selector = selector
         .iter()
-        .map(|b| format!("{:02x}", b))
+        .map(|b| format!("{b:02x}"))
         .collect::<String>();
 
     InlayHint {
@@ -128,7 +128,7 @@ fn func_to_inlay_hint(selector: Vec<u8>, loc: Range) -> InlayHint {
             line: loc.end.line,
             character: loc.end.character + 2,
         },
-        label: InlayHintLabel::String(format!(" // selector: {}", hex_selector)),
+        label: InlayHintLabel::String(format!(" // selector: {hex_selector}")),
         kind: None,
         text_edits: None,
         tooltip: None,

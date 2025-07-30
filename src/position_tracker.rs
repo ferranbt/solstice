@@ -20,7 +20,7 @@ impl PositionTracker {
 
         for change in changes {
             if let Some(range) = &change.range {
-                replacements.push((range.clone(), change.text.clone()));
+                replacements.push((*range, change.text.clone()));
 
                 // Calculate line changes
                 let lines_added = change.text.matches('\n').count() as i32;
@@ -115,11 +115,8 @@ impl PositionTracker {
                 if range.start.line == new_position.line && range.end.line == position.line {
                     // This replacement merged our line
                     let chars_before_replacement = range.start.character;
-                    let chars_after_removed_part = if position.character > range.end.character {
-                        position.character - range.end.character
-                    } else {
-                        0
-                    };
+                    let chars_after_removed_part =
+                        position.character.saturating_sub(range.end.character);
 
                     new_position.character = chars_before_replacement
                         + replacement_text.len() as u32
