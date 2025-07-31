@@ -23,6 +23,7 @@ import axios from "axios";
 import { extract } from "tar";
 import { execSync } from "child_process";
 import { createMiddleware } from "./middleware";
+import { Config } from "./config";
 
 import {
   Executable,
@@ -52,6 +53,8 @@ export async function activate(context: ExtensionContext) {
   context.subscriptions.push(
     vscode.debug.registerDebugConfigurationProvider("mock", provider),
   );
+
+  const config = new Config();
 
   // register a dynamic configuration provider for 'mock' debug type
   context.subscriptions.push(
@@ -138,10 +141,10 @@ export async function activate(context: ExtensionContext) {
   );
   context.subscriptions.push(showImportPicker);
 
-  const reinitializeCommand = vscode.commands.registerCommand(
-    "solstice.reinitialize",
+  const restartServerCommand = vscode.commands.registerCommand(
+    "solstice.restartServer",
     async () => {
-      consoleLog("Reinitializing Solstice language server...");
+      consoleLog("Restarting Solstice server");
 
       // Stop existing client
       if (client) {
@@ -149,15 +152,15 @@ export async function activate(context: ExtensionContext) {
       }
 
       // Start fresh (this will re-run getServer() automatically)
-      await startLanguageClient(context);
+      await startLanguageClient(context, config);
     },
   );
-  context.subscriptions.push(reinitializeCommand);
+  context.subscriptions.push(restartServerCommand);
 
-  startLanguageClient(context);
+  startLanguageClient(context, config);
 }
 
-async function startLanguageClient(context: ExtensionContext) {
+async function startLanguageClient(context: ExtensionContext, config: Config) {
   const command = await getServer();
 
   const run: Executable = {
@@ -176,8 +179,6 @@ async function startLanguageClient(context: ExtensionContext) {
     },
   };
 
-  const initializationOptions = vscode.workspace.getConfiguration("solstice");
-
   const serverOptions: ServerOptions = {
     run,
     debug: run,
@@ -189,7 +190,7 @@ async function startLanguageClient(context: ExtensionContext) {
     // Register the server for plain text documents
     documentSelector: [{ scheme: "file", language: "sol" }],
     middleware: createMiddleware(),
-    initializationOptions: initializationOptions,
+    initializationOptions: config.cfg,
     initializationFailedHandler: (error) => {
       consoleLog("Initialization failed:", error);
       return false;

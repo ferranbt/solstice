@@ -1,4 +1,5 @@
 import * as path from "path";
+import * as fs from "fs";
 
 import { runTests } from "@vscode/test-electron";
 
@@ -11,6 +12,16 @@ async function main() {
     // The path to the extension test script
     // Passed to --extensionTestsPath
     const extensionTestsPath = path.resolve(__dirname, "./suite/index");
+
+    // Remove the user data folder to reset all settings
+    const userDataPath = path.resolve(
+      __dirname,
+      "../../.vscode-test/user-data",
+    );
+    if (fs.existsSync(userDataPath)) {
+      fs.rmSync(userDataPath, { recursive: true, force: true });
+      console.log("Cleared VS Code test user data");
+    }
 
     // Download VS Code, unzip it and run the integration test
     await runTests({

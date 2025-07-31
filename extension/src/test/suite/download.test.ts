@@ -4,6 +4,7 @@ import * as path from "path";
 import * as sinon from "sinon";
 import * as fs from "fs";
 import { getDocUri, open_document, sleep } from "./extension.test";
+import { updateConfig } from "./extension.test";
 
 suite("Download LSP server", () => {
   let originalServerPath: string | undefined;
@@ -26,15 +27,10 @@ suite("Download LSP server", () => {
 
     // generate a temporal folder to store the solstice path
     const tmpDir = path.join(__dirname, "tmp");
-    const config = vscode.workspace.getConfiguration("solstice");
-    await config.update(
-      "solsticePath",
-      tmpDir,
-      vscode.ConfigurationTarget.Global,
-    );
+    await updateConfig("solsticePath", tmpDir);
 
     // Restart the solstice extension to apply the new configuration
-    await vscode.commands.executeCommand("solstice.reinitialize");
+    await vscode.commands.executeCommand("solstice.restartServer");
 
     const uri = getDocUri("diag.sol");
     await open_document(uri);
@@ -59,11 +55,7 @@ suite("Download LSP server", () => {
 
     installStub.restore();
 
-    await config.update(
-      "solsticePath",
-      undefined,
-      vscode.ConfigurationTarget.Global,
-    );
+    await updateConfig("solsticePath", undefined);
     fs.rmdirSync(tmpDir, { recursive: true });
   });
 });
