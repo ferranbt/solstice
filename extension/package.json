@@ -70,6 +70,16 @@
     ],
     "configuration": [
       {
+        "title": "general",
+        "properties": {
+          "solstice.restartServerOnConfigChange": {
+            "markdownDescription": "Automatically restart the language server when settings that require a restart are modified.",
+            "default": false,
+            "type": "boolean"
+          }
+        }
+      },
+      {
         "title": "sol-language-server",
         "properties": {
           "sol-language-server.trace.server": {

@@ -48,6 +48,11 @@ suite("Extension Test Suite", () => {
 
   suiteSetup(async () => {
     await activate();
+    await restartOnConfigChange(true);
+  });
+
+  suiteTeardown(async () => {
+    await restartOnConfigChange(false);
   });
 
   test("Diagnostics", async () => {
@@ -70,13 +75,51 @@ suite("Extension Test Suite", () => {
     await open_document(uri);
 
     // Request inlay hints
-    const hints = await vscode.commands.executeCommand<vscode.InlayHint[]>(
-      "vscode.executeInlayHintProvider",
-      uri,
-      new vscode.Range(0, 0, 100, 0),
-    );
+    async function check_inlays(expected_hints) {
+      const hints = (await vscode.commands.executeCommand<vscode.InlayHint[]>(
+        "vscode.executeInlayHintProvider",
+        uri,
+        new vscode.Range(0, 0, 100, 0),
+      )) as vscode.InlayHint[];
 
-    const expected_hints = [
+      assert.strictEqual(
+        hints.length,
+        expected_hints.length,
+        "Unexpected number of hints found",
+      );
+      for (let i = 0; i < hints.length; i++) {
+        assert.strictEqual(
+          hints[i].label,
+          expected_hints[i].label,
+          `Hint at index ${i} does not match expected label`,
+        );
+        assert.deepStrictEqual(
+          hints[i].position,
+          expected_hints[i].position,
+          `Hint at index ${i} does not match expected position`,
+        );
+      }
+    }
+
+    const function_selector_hints = [
+      {
+        label: "selector: 3d41c222",
+        position: new vscode.Position(4, 74),
+      },
+      {
+        label: "selector: fd610ec7",
+        position: new vscode.Position(30, 60),
+      },
+    ];
+
+    // Only expected the function selector inlays since the number of lines
+    // is lower than 25 to show the end of block inlay
+    check_inlays(function_selector_hints);
+
+    // Lower down the end of block min lines to 5
+    await updateConfig("inlayHints.closingBraceHints.minLines", 5);
+
+    await check_inlays([
       {
         label: "selector: 3d41c222",
         position: new vscode.Position(4, 74),
@@ -89,25 +132,11 @@ suite("Extension Test Suite", () => {
         label: "selector: fd610ec7",
         position: new vscode.Position(30, 60),
       },
-    ];
+    ]);
 
-    assert.strictEqual(
-      hints.length,
-      expected_hints.length,
-      "Unexpected number of hints found",
-    );
-    for (let i = 0; i < hints.length; i++) {
-      assert.strictEqual(
-        hints[i].label,
-        expected_hints[i].label,
-        `Hint at index ${i} does not match expected label`,
-      );
-      assert.deepStrictEqual(
-        hints[i].position,
-        expected_hints[i].position,
-        `Hint at index ${i} does not match expected position`,
-      );
-    }
+    // Disable end of block inlays
+    await updateConfig("inlayHints.closingBraceHints.enable", false);
+    await check_inlays(function_selector_hints);
   });
 
   test("Hover", async () => {
@@ -352,3 +381,15 @@ suite("Extension Test Suite", () => {
     );
   });
 });
+
+export async function updateConfig(path, value) {
+  const config = vscode.workspace.getConfiguration("solstice");
+  await config.update(path, value, vscode.ConfigurationTarget.Global);
+
+  // we need to sleep to let the LSP server get restarted and parse the file again
+  await sleep(1000);
+}
+
+export async function restartOnConfigChange(val = true) {
+  await updateConfig("restartServerOnConfigChange", val);
+}
