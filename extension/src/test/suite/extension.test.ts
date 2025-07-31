@@ -65,6 +65,39 @@ suite("Extension Test Suite", () => {
     assert.deepStrictEqual(diagnostic.range, new vscode.Range(5, 8, 5, 13));
   });
 
+  test("Hints", async () => {
+    const uri = getDocUri("hints.sol");
+    await open_document(uri);
+
+    // Request inlay hints
+    const hints = await vscode.commands.executeCommand<vscode.InlayHint[]>(
+      'vscode.executeInlayHintProvider',
+      uri,
+      new vscode.Range(0, 0, 100, 0)
+    );
+
+    const expected_hints = [
+      {
+        "label": "selector: 3d41c222",
+        "position": new vscode.Position(4, 74),
+      },
+      {
+        "label": "fn calculateFactorial_uint256",
+        "position": new vscode.Position(27, 5),
+      },
+      {
+        "label": "selector: fd610ec7",
+        "position": new vscode.Position(30, 60),
+      },
+    ]
+
+    assert.strictEqual(hints.length, expected_hints.length, "Unexpected number of hints found");
+    for (let i = 0; i < hints.length; i++) {
+      assert.strictEqual(hints[i].label, expected_hints[i].label, `Hint at index ${i} does not match expected label`);
+      assert.deepStrictEqual(hints[i].position, expected_hints[i].position, `Hint at index ${i} does not match expected position`);
+    }
+  });
+
   test("Hover", async () => {
     const uri = getDocUri("simple.sol");
     const pos1 = new vscode.Position(7, 11);
