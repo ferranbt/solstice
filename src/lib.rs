@@ -93,7 +93,7 @@ impl LanguageServer for Backend {
         if let Some(opts) = params.initialization_options {
             config = Config::from_json(opts).map_err(|e| Error {
                 code: ErrorCode::InvalidParams,
-                message: format!("Failed to parse initialization options: {}", e).into(),
+                message: format!("Failed to parse initialization options: {e}").into(),
                 data: None,
             })?;
         }

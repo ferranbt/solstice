@@ -29,7 +29,7 @@ fn flatten_json(value: Value) -> Value {
             let new_key = if prefix.is_empty() {
                 key.clone()
             } else {
-                format!("{}_{}", prefix, key)
+                format!("{prefix}_{key}")
             };
 
             match val {
