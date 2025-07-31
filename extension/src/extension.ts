@@ -176,7 +176,7 @@ async function startLanguageClient(context: ExtensionContext) {
     },
   };
 
-  let initializationOptions = vscode.workspace.getConfiguration("solstice");
+  const initializationOptions = vscode.workspace.getConfiguration("solstice");
 
   const serverOptions: ServerOptions = {
     run,
