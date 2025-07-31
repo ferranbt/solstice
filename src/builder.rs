@@ -23,6 +23,8 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::lsp_types::{Position, Range};
 
+use crate::config::Config;
+
 /// Stores information used by language server for every opened file
 #[derive(Default)]
 pub struct Files {
@@ -115,8 +117,6 @@ pub struct FileCache {
     pub unknown_types: Vec<(Range, String)>,
     pub available_hints: Vec<InlayHint>,
 }
-
-const END_OF_BLOCK_HINT_MIN_LINES: u32 = 10;
 
 fn end_of_block_hint(func_name: String, loc: Range) -> InlayHint {
     // Display the function name at the end of the range
@@ -1276,7 +1276,7 @@ impl<'a> Builder<'a> {
 
     /// Traverses namespace to extract information used later by the language server
     /// This includes hover messages, locations where code objects are declared and used
-    pub fn build(mut self) -> (Vec<FileCache>, GlobalCache) {
+    pub fn build(mut self, config: &Config) -> (Vec<FileCache>, GlobalCache) {
         for (ei, enum_decl) in self.ns.enums.iter().enumerate() {
             for (discriminant, (nam, loc)) in enum_decl.values.iter().enumerate() {
                 let file_no = loc.file_no();
@@ -1917,12 +1917,15 @@ impl<'a> Builder<'a> {
                         let mut hints = vec![];
 
                         // hint for end of function
-                        if let Some(Statement::Block { loc, .. }) = f.body.first() {
-                            let loc_range = loc_to_range(loc, self.ns.files.get(i).unwrap());
-                            if loc_range.end.line - loc_range.start.line
-                                >= END_OF_BLOCK_HINT_MIN_LINES
-                            {
-                                hints.push(end_of_block_hint(f.mangled_name.clone(), loc_range));
+                        if config.inlayHints_closingBraceHints_enable {
+                            if let Some(Statement::Block { loc, .. }) = f.body.first() {
+                                let loc_range = loc_to_range(loc, self.ns.files.get(i).unwrap());
+                                if loc_range.end.line - loc_range.start.line
+                                    >= config.inlayHints_closingBraceHints_minLines
+                                {
+                                    hints
+                                        .push(end_of_block_hint(f.mangled_name.clone(), loc_range));
+                                }
                             }
                         }
 

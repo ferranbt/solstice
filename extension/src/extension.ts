@@ -176,6 +176,8 @@ async function startLanguageClient(context: ExtensionContext) {
     },
   };
 
+  let initializationOptions = vscode.workspace.getConfiguration("solstice");
+
   const serverOptions: ServerOptions = {
     run,
     debug: run,
@@ -187,6 +189,7 @@ async function startLanguageClient(context: ExtensionContext) {
     // Register the server for plain text documents
     documentSelector: [{ scheme: "file", language: "sol" }],
     middleware: createMiddleware(),
+    initializationOptions: initializationOptions,
     initializationFailedHandler: (error) => {
       consoleLog("Initialization failed:", error);
       return false;
@@ -246,8 +249,7 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 class MockDebugAdapterNamedPipeServerDescriptorFactory
-  implements vscode.DebugAdapterDescriptorFactory
-{
+  implements vscode.DebugAdapterDescriptorFactory {
   private _server?: Net.Server;
 
   createDebugAdapterDescriptor(
