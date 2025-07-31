@@ -24,6 +24,7 @@ import { extract } from "tar";
 import { execSync } from "child_process";
 import { createMiddleware } from "./middleware";
 import { Config } from "./config";
+import { log } from "./log";
 
 import {
   Executable,
@@ -37,16 +38,10 @@ import {
 
 let client: LanguageClient;
 
-const outputChannel2 = vscode.window.createOutputChannel("Solstice");
-
-export function consoleLog(...args: (string | number | boolean | object)[]) {
-  outputChannel2.appendLine(args.join(" "));
-}
-
 const traceOutputChannel = window.createOutputChannel("Solstice");
 
 export async function activate(context: ExtensionContext) {
-  consoleLog("Activated");
+  log.info("Activated");
 
   // register a configuration provider for 'mock' debug type
   const provider = new MockConfigurationProvider();
@@ -91,7 +86,6 @@ export async function activate(context: ExtensionContext) {
   );
 
   // activate debug
-  console.log("REGISTERED DEBUG ADAPTER");
   context.subscriptions.push(
     debug.registerDebugAdapterDescriptorFactory(
       "mock",
@@ -144,7 +138,7 @@ export async function activate(context: ExtensionContext) {
   const restartServerCommand = vscode.commands.registerCommand(
     "solstice.restartServer",
     async () => {
-      consoleLog("Restarting Solstice server");
+      log.info("Restarting Solstice server");
 
       // Stop existing client
       if (client) {
@@ -192,7 +186,6 @@ async function startLanguageClient(context: ExtensionContext, config: Config) {
     middleware: createMiddleware(),
     initializationOptions: config.cfg,
     initializationFailedHandler: (error) => {
-      consoleLog("Initialization failed:", error);
       return false;
     },
     synchronize: {
@@ -214,9 +207,6 @@ async function startLanguageClient(context: ExtensionContext, config: Config) {
   client.onNotification(
     "custom/logToChannel",
     (params: { channel: string; message: string }) => {
-      console.log("......");
-      console.log(params);
-
       if (!outputChannel) {
         outputChannel = vscode.window.createOutputChannel(params.channel, {
           log: true,
@@ -228,9 +218,6 @@ async function startLanguageClient(context: ExtensionContext, config: Config) {
   );
 
   client.onNotification("custom/logToChannel2", (params) => {
-    console.log("......");
-    console.log(params);
-
     outputChannel.append("Starting debug session");
     outputChannel.append(JSON.stringify(params));
 
@@ -250,8 +237,7 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 class MockDebugAdapterNamedPipeServerDescriptorFactory
-  implements vscode.DebugAdapterDescriptorFactory
-{
+  implements vscode.DebugAdapterDescriptorFactory {
   private _server?: Net.Server;
 
   createDebugAdapterDescriptor(
@@ -298,30 +284,30 @@ class MockConfigurationProvider implements vscode.DebugConfigurationProvider {
 
 async function getServer(): Promise<string> {
   const configuration = vscode.workspace.getConfiguration("solstice");
-  consoleLog("Loading configuration:", JSON.stringify(configuration));
+  log.info("Loading configuration:", JSON.stringify(configuration));
 
   // Use process.env.SERVER_PATH in the launch configuration if defined
   if (process.env.SERVER_PATH) {
-    consoleLog("Using server path from environment variable SERVER_PATH");
+    log.info("Using server path from environment variable SERVER_PATH");
     return process.env.SERVER_PATH;
   }
 
   // Try to find the 'solstice' executable workspace configuration
   const serverPath = configuration.get<string>("serverPath");
   if (serverPath) {
-    consoleLog("Using server path from workspace configuration");
+    log.info("Using server path from workspace configuration");
     return serverPath;
   }
 
   // Try to find the 'solstice' executable in the $PATH
   if (executableFileExists("solstice")) {
-    consoleLog("Using server path from $PATH");
+    log.info("Using server path from $PATH");
     return "solstice";
   }
 
   // Try to find the latest release version of the 'solstice' executable
   const latestVersion = await getLatestReleaseVersion();
-  consoleLog("Remote solstice version", latestVersion);
+  log.info("Remote solstice version", latestVersion);
 
   // Try to find the 'solstice' executable in the $HOME/.solstice directory
   const home = configuration.get<string>("solsticePath") || os.homedir();
@@ -341,7 +327,7 @@ async function checkAndUpdateIfNeeded(
 ): Promise<string> {
   try {
     const currentVersion = getSolsticeVersion(solsticePath);
-    consoleLog("Current installed solstice version:", currentVersion);
+    log.info("Current installed solstice version:", currentVersion);
 
     if (isNewerVersion(latestVersion, currentVersion)) {
       const action = await vscode.window.showInformationMessage(
@@ -355,7 +341,7 @@ async function checkAndUpdateIfNeeded(
       }
     }
   } catch (error) {
-    consoleLog("Version check failed, using existing binary:", error);
+    log.error("Version check failed, using existing binary:", error);
   }
 
   return solsticePath;
@@ -407,7 +393,7 @@ function executableFileExists(filePath: string): boolean {
       fs.accessSync(filePath, fs.constants.F_OK | fs.constants.X_OK);
     }
   } catch (e) {
-    consoleLog(`File does not exist or is not executable: ${filePath}`, e);
+    log.error(`File does not exist or is not executable: ${filePath}`, e);
     exists = false;
   }
   return exists;
@@ -439,7 +425,7 @@ async function getLatestReleaseVersion(): Promise<string> {
     );
     return response.data.tag_name;
   } catch (error) {
-    consoleLog("Failed to fetch latest release:", error);
+    log.error("Failed to fetch latest release:", error);
     return "";
   }
 }
@@ -468,7 +454,7 @@ async function downloadSolsticeRelease(solsticePath: string, version: string) {
   const downloadUrl = `https://github.com/ferranbt/solstice/releases/download/${version}/${binaryName}`;
   const tempFile = `/tmp/solstice_${version}.tar.gz`;
 
-  consoleLog("Downloading solstice from", downloadUrl);
+  log.info("Downloading solstice from", downloadUrl);
 
   // Download the file
   await new Promise((resolve, reject) => {
