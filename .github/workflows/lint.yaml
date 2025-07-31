@@ -21,8 +21,10 @@ jobs:
           override: true
           components: rustfmt
 
+      - uses: taiki-e/install-action@just
+
       - name: Lint
-        run: make lint
+        run: just lint
 
       - name: Format code
-        run: make check_format
+        run: just check_format

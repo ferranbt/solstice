@@ -15,3 +15,9 @@ fuzz-state:
 # This is useful for updating the expected traces after changes to the tracer logic
 override-traces:
     OVERRIDE_TESTS=1 cargo test --lib -- tracer::tests::test_debugger_traces --exact --show-output --nocapture
+
+lint:
+	cargo clippy -- -D warnings
+
+check_format:
+	cargo fmt -- --check
