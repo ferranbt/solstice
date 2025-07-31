@@ -22,7 +22,7 @@ jobs:
           components: rustfmt
 
       - name: Lint
-        run: make lint
+        run: just lint
 
       - name: Format code
-        run: make check_format
+        run: just check_format
