@@ -98,8 +98,6 @@ impl LanguageServer for Backend {
             })?;
         }
 
-        tracing::info!("Config loaded: {:?}", config);
-
         let mut config_guard = self.config.lock().await;
         *config_guard = config.clone();
 
