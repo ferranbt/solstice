@@ -71,30 +71,42 @@ suite("Extension Test Suite", () => {
 
     // Request inlay hints
     const hints = await vscode.commands.executeCommand<vscode.InlayHint[]>(
-      'vscode.executeInlayHintProvider',
+      "vscode.executeInlayHintProvider",
       uri,
-      new vscode.Range(0, 0, 100, 0)
+      new vscode.Range(0, 0, 100, 0),
     );
 
     const expected_hints = [
       {
-        "label": "selector: 3d41c222",
-        "position": new vscode.Position(4, 74),
+        label: "selector: 3d41c222",
+        position: new vscode.Position(4, 74),
       },
       {
-        "label": "fn calculateFactorial_uint256",
-        "position": new vscode.Position(27, 5),
+        label: "fn calculateFactorial_uint256",
+        position: new vscode.Position(27, 5),
       },
       {
-        "label": "selector: fd610ec7",
-        "position": new vscode.Position(30, 60),
+        label: "selector: fd610ec7",
+        position: new vscode.Position(30, 60),
       },
-    ]
+    ];
 
-    assert.strictEqual(hints.length, expected_hints.length, "Unexpected number of hints found");
+    assert.strictEqual(
+      hints.length,
+      expected_hints.length,
+      "Unexpected number of hints found",
+    );
     for (let i = 0; i < hints.length; i++) {
-      assert.strictEqual(hints[i].label, expected_hints[i].label, `Hint at index ${i} does not match expected label`);
-      assert.deepStrictEqual(hints[i].position, expected_hints[i].position, `Hint at index ${i} does not match expected position`);
+      assert.strictEqual(
+        hints[i].label,
+        expected_hints[i].label,
+        `Hint at index ${i} does not match expected label`,
+      );
+      assert.deepStrictEqual(
+        hints[i].position,
+        expected_hints[i].position,
+        `Hint at index ${i} does not match expected position`,
+      );
     }
   });
 
