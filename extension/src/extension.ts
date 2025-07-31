@@ -38,7 +38,13 @@ import {
 
 let client: LanguageClient;
 
-const traceOutputChannel = window.createOutputChannel("Solstice");
+// Output channel for the LSP server
+const lspOutputChannel = vscode.window.createOutputChannel(
+  "Solstice Language Server",
+);
+
+// Output channel for the LSP trace
+const lspTraceOutputChannel = window.createOutputChannel("Solstice LSP Trace");
 
 export async function activate(context: ExtensionContext) {
   log.info("Activated");
@@ -189,11 +195,12 @@ async function startLanguageClient(context: ExtensionContext, config: Config) {
       log.error("Initialization failed:", error);
       return false;
     },
+    outputChannel: lspOutputChannel,
+    traceOutputChannel: lspTraceOutputChannel,
     synchronize: {
       // Notify the server about file changes to '.clientrc files contained in the workspace
       fileEvents: workspace.createFileSystemWatcher("**/.clientrc"),
     },
-    traceOutputChannel,
   };
 
   // Create the language client and start the client.
