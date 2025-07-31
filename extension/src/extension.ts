@@ -186,6 +186,7 @@ async function startLanguageClient(context: ExtensionContext, config: Config) {
     middleware: createMiddleware(),
     initializationOptions: config.cfg,
     initializationFailedHandler: (error) => {
+      log.error("Initialization failed:", error);
       return false;
     },
     synchronize: {
@@ -237,7 +238,8 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 class MockDebugAdapterNamedPipeServerDescriptorFactory
-  implements vscode.DebugAdapterDescriptorFactory {
+  implements vscode.DebugAdapterDescriptorFactory
+{
   private _server?: Net.Server;
 
   createDebugAdapterDescriptor(
