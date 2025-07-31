@@ -21,6 +21,8 @@ jobs:
           override: true
           components: rustfmt
 
+      - uses: taiki-e/install-action@just
+
       - name: Lint
         run: just lint
 
