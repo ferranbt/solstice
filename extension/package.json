@@ -68,33 +68,58 @@
         "title": "Start Debug Session"
       }
     ],
-    "configuration": {
-      "type": "object",
-      "title": "sol-language-server",
-      "properties": {
-        "sol-language-server.trace.server": {
-          "type": "string",
-          "scope": "window",
-          "enum": [
-            "off",
-            "messages",
-            "verbose"
-          ],
-          "enumDescriptions": [
-            "No traces",
-            "Error only",
-            "Full log"
-          ],
-          "default": "off",
-          "description": "Traces the communication between VS Code and the language server."
-        },
-        "solstice.solsticePath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to the Solstice language server directory"
+    "configuration": [
+      {
+        "title": "sol-language-server",
+        "properties": {
+          "sol-language-server.trace.server": {
+            "type": "string",
+            "scope": "window",
+            "enum": [
+              "off",
+              "messages",
+              "verbose"
+            ],
+            "enumDescriptions": [
+              "No traces",
+              "Error only",
+              "Full log"
+            ],
+            "default": "off",
+            "description": "Traces the communication between VS Code and the language server."
+          },
+          "solstice.solsticePath": {
+            "type": "string",
+            "default": "",
+            "description": "Path to the Solstice language server directory"
+          }
+        }
+      },
+      {
+        "title": "Inlay Hints"
+      },
+      {
+        "title": "Inlay Hints",
+        "properties": {
+          "solstice.inlayHints.closingBraceHints.enable": {
+            "markdownDescription": "Display inlay hints next to closing `}` braces to show which block or construct they terminate.",
+            "default": true,
+            "type": "boolean"
+          }
+        }
+      },
+      {
+        "title": "Inlay Hints",
+        "properties": {
+          "solstice.inlayHints.closingBraceHints.minLines": {
+            "markdownDescription": "Required minimum line count between opening and closing braces before displaying hints (use 0 or 1 to display hints for all blocks).",
+            "default": 25,
+            "type": "integer",
+            "minimum": 0
+          }
         }
       }
-    },
+    ],
     "grammars": [
       {
         "language": "sol",

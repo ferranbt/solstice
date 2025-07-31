@@ -21,6 +21,7 @@ use tracer::{execute_command, generate_trace};
 
 use crate::builder::{Builder, Files, GlobalCache};
 use crate::builder::{DefinitionType, Hints};
+use crate::config::Config;
 use crate::position_tracker::PositionTracker;
 use crate::symbol_indexer::SymbolIndexer;
 use crate::tracer::{DebugTrace, Forge};
@@ -45,6 +46,7 @@ pub mod built_info {
 
 // mod dap;
 mod builder;
+mod config;
 mod dap;
 mod debugger;
 mod metrics;
@@ -52,12 +54,12 @@ mod position_tracker;
 mod state;
 mod symbol_indexer;
 mod tracer;
-
 struct Backend {
     client: Client,
     files: Arc<Files>,
     workspace: Mutex<String>,
     global_cache: Arc<Mutex<GlobalCache>>,
+    config: Mutex<Config>,
     tx: OnceLock<tokio::sync::mpsc::Sender<ParseRequest>>,
     symbol_indexer: Arc<SymbolIndexer>,
 }
@@ -87,6 +89,18 @@ impl Notification for CustomNotification2 {
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        let mut config = Config::default();
+        if let Some(opts) = params.initialization_options {
+            config = Config::from_json(opts).map_err(|e| Error {
+                code: ErrorCode::InvalidParams,
+                message: format!("Failed to parse initialization options: {e}").into(),
+                data: None,
+            })?;
+        }
+
+        let mut config_guard = self.config.lock().await;
+        *config_guard = config.clone();
+
         let workspace = params.root_uri.unwrap_or_else(|| {
             // If no root URI is provided, use the current directory as the workspace
             // In E2E tests, this is the case.
@@ -99,7 +113,7 @@ impl LanguageServer for Backend {
 
         self.tx.get_or_init(|| {
             let (tx, rx) = tokio::sync::mpsc::channel(5);
-            self.spawn_compiler_routine(workspace_path.clone(), rx);
+            self.spawn_compiler_routine(workspace_path.clone(), config.clone(), rx);
 
             tx
         });
@@ -1005,6 +1019,7 @@ impl Backend {
     fn spawn_compiler_routine(
         &self,
         workspace: String,
+        config: Config,
         mut rx: tokio::sync::mpsc::Receiver<ParseRequest>,
     ) {
         let files = Arc::clone(&self.files);
@@ -1103,7 +1118,7 @@ impl Backend {
                     }));
 
                     let res = client.publish_diagnostics(uri, diags, None);
-                    let (file_caches, sub_global_cache) = Builder::new(&ns).build();
+                    let (file_caches, sub_global_cache) = Builder::new(&ns).build(&config);
 
                     for (f, c) in ns.files.iter().zip(file_caches.into_iter()) {
                         if f.cache_no.is_some() {
@@ -1348,6 +1363,7 @@ impl Cli {
                     files: Arc::new(Default::default()),
                     workspace: Mutex::new(String::new()),
                     global_cache: Arc::new(Mutex::new(Default::default())),
+                    config: Mutex::new(Config::default()),
                     tx: OnceLock::new(),
                     symbol_indexer: Arc::new(SymbolIndexer::new()),
                 })
