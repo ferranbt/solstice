@@ -2,7 +2,8 @@ use builder::{error_type_to_code, get_type_definition, DefinitionIndex};
 use built_info::PKG_VERSION;
 use clap::{Args, Parser, Subcommand};
 use dashmap::mapref::entry::Entry;
-use debugger::DapDebugger;
+use debugger::debugger::DapDebugger;
+use debugger::tracer::{execute_command, generate_trace};
 use forge_fmt::fmt;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -17,14 +18,13 @@ use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::request::GotoTypeDefinitionResponse;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tracer::{execute_command, generate_trace};
 
 use crate::builder::{Builder, Files, GlobalCache};
 use crate::builder::{DefinitionType, Hints};
 use crate::config::Config;
+use crate::debugger::tracer::{DebugTrace, Forge};
 use crate::position_tracker::PositionTracker;
 use crate::symbol_indexer::SymbolIndexer;
-use crate::tracer::{DebugTrace, Forge};
 use pprof::protos::Message;
 use std::collections::HashMap;
 use std::io::Write;
@@ -37,7 +37,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use tokio::net::TcpStream;
 
-use crate::dap::Server as DapServer;
+use crate::debugger::dap::Server as DapServer;
 
 // Include the generated-file as a separate module
 pub mod built_info {
@@ -47,13 +47,11 @@ pub mod built_info {
 // mod dap;
 mod builder;
 mod config;
-mod dap;
+
 mod debugger;
-mod metrics;
 mod position_tracker;
-mod state;
 mod symbol_indexer;
-mod tracer;
+
 struct Backend {
     client: Client,
     files: Arc<Files>,

@@ -6,16 +6,16 @@ use dap::types::Thread;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::dap::requests::{
+use crate::debugger::dap::requests::{
     ContinueArguments, LaunchRequestArguments, SetBreakpointsArguments, StepInArguments,
     StepOutArguments, VariablesArguments,
 };
-use crate::dap::responses::{SetBreakpointsResponse, ThreadsResponse, VariablesResponse};
-use crate::dap::Client;
-use crate::dap::Service;
-use crate::state::{resolve_memory_assignment, StateReference, Type};
-use crate::tracer::VariableLocation;
-use crate::tracer::{Assignment, DebugTrace, DebugTraceStep, StepKind, Variable};
+use crate::debugger::dap::responses::{SetBreakpointsResponse, ThreadsResponse, VariablesResponse};
+use crate::debugger::dap::Client;
+use crate::debugger::dap::Service;
+use crate::debugger::state::{resolve_memory_assignment, StateReference, Type};
+use crate::debugger::tracer::VariableLocation;
+use crate::debugger::tracer::{Assignment, DebugTrace, DebugTraceStep, StepKind, Variable};
 
 pub struct DapDebugger {
     debug_trace: RefCell<Debugger>,
@@ -520,7 +520,7 @@ impl Debugger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracer::testing::trace_function;
+    use crate::debugger::tracer::testing::trace_function;
     use std::sync::Mutex;
 
     // Run the test sequentially because of https://github.com/ferranbt/solstice/issues/50

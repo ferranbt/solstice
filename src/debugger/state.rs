@@ -1006,7 +1006,7 @@ pub mod testing {
     use std::str::FromStr;
     use thiserror::Error;
 
-    use crate::tracer::IcPcMap;
+    use crate::debugger::tracer::IcPcMap;
 
     type AnvilProvider = FillProvider<
         JoinFill<

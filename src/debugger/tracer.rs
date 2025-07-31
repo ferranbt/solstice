@@ -1,5 +1,7 @@
-use crate::metrics::{Action, MetricsRecorder};
-use crate::state::{parse_variable_declaration_type, StateReference, StoragePosition, Type};
+use crate::debugger::metrics::{Action, MetricsRecorder};
+use crate::debugger::state::{
+    parse_variable_declaration_type, StateReference, StoragePosition, Type,
+};
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
@@ -1842,7 +1844,8 @@ const SKIP_TRACE_LIST: &[&str] = &[
 
 #[cfg(test)]
 pub mod testing {
-    use crate::{tracer::DebugTrace, TraceArgs};
+    use crate::debugger::tracer::DebugTrace;
+    use crate::TraceArgs;
 
     pub fn trace_function(name: &str, functions: &str) -> eyre::Result<DebugTrace> {
         let contract = format!(
@@ -1897,8 +1900,8 @@ contract TestContract {{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::debugger::Debugger;
-    use crate::state::testing::compile_contract;
+    use crate::debugger::debugger::Debugger;
+    use crate::debugger::state::testing::compile_contract;
     use std::fmt::{Display, Write};
     use std::path::PathBuf;
 
