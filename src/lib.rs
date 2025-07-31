@@ -3,7 +3,7 @@ use built_info::PKG_VERSION;
 use clap::{Args, Parser, Subcommand};
 use dashmap::mapref::entry::Entry;
 use debugger::debugger::DapDebugger;
-use debugger::tracer::{execute_command, generate_trace};
+use debugger::tracer::{execute_command, Builder as TraceBuilder};
 use forge_fmt::fmt;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -44,10 +44,8 @@ pub mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
-// mod dap;
 mod builder;
 mod config;
-
 mod debugger;
 mod position_tracker;
 mod symbol_indexer;
@@ -1293,7 +1291,8 @@ impl TraceArgs {
         let debug_cmd = Forge::debug(&self.match_test, &self.match_path, TEMP_FORGE_DUMP_PATH);
         let _ = execute_command(&workspace_path, debug_cmd.clone())?;
 
-        let (debug_trace, _) = generate_trace(&workspace_path, TEMP_FORGE_DUMP_PATH)?;
+        let (debug_trace, _) =
+            TraceBuilder::new(&workspace_path).generate_trace(TEMP_FORGE_DUMP_PATH)?;
         Ok(debug_trace)
     }
 
@@ -1401,7 +1400,9 @@ fn run_dap_server(workspace_path: &str) -> u64 {
         let input = BufReader::new(stream.try_clone().unwrap());
         let output = BufWriter::new(stream);
 
-        let (debug_trace, _) = generate_trace(&workspace_path, TEMP_FORGE_DUMP_PATH).unwrap();
+        let (debug_trace, _) = TraceBuilder::new(&workspace_path)
+            .generate_trace(TEMP_FORGE_DUMP_PATH)
+            .unwrap();
 
         std::fs::write(
             "/tmp/full_trace_dump.json",
