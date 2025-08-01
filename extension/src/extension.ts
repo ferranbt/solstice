@@ -15,16 +15,18 @@ import {
 import { WorkspaceFolder, DebugConfiguration } from "vscode";
 
 import * as fs from "fs";
+import * as fsP from "fs/promises";
 import * as Net from "net";
 import * as vscode from "vscode";
 import * as os from "os";
 import * as path from "path";
 import axios from "axios";
 import { extract } from "tar";
-import { execSync } from "child_process";
+import { execSync, exec } from "child_process";
 import { createMiddleware } from "./middleware";
 import { Config } from "./config";
 import { log } from "./log";
+import { promisify } from "util";
 
 import {
   Executable,
@@ -117,14 +119,15 @@ export async function activate(context: ExtensionContext) {
       "solstice.showDependencyGraph",
       async () => {
         try {
-          let graph: string = await vscode.commands.executeCommand("solstice.generateDependencyGraph");
+          const graph: string = await vscode.commands.executeCommand(
+            "solstice.generateDependencyGraph",
+          );
           await generateAndShowGraph(graph);
-
         } catch (error) {
           log.error("Failed to generate dependency graph:", error);
         }
       },
-    )
+    ),
   );
 
   const showImportPicker = vscode.commands.registerCommand(
@@ -260,7 +263,8 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 class MockDebugAdapterNamedPipeServerDescriptorFactory
-  implements vscode.DebugAdapterDescriptorFactory {
+  implements vscode.DebugAdapterDescriptorFactory
+{
   private _server?: Net.Server;
 
   createDebugAdapterDescriptor(
@@ -517,11 +521,6 @@ async function downloadSolsticeRelease(solsticePath: string, version: string) {
 }
 
 async function generateAndShowGraph(dotContent: string): Promise<void> {
-  const os = require('os');
-  const path = require('path');
-  const fs = require('fs').promises;
-  const { exec } = require('child_process');
-  const { promisify } = require('util');
   const execAsync = promisify(exec);
 
   try {
@@ -532,32 +531,38 @@ async function generateAndShowGraph(dotContent: string): Promise<void> {
     const svgFile = path.join(tempDir, `solstice-deps-${timestamp}.svg`);
 
     // Write DOT content
-    await fs.writeFile(dotFile, dotContent);
+    await fsP.writeFile(dotFile, dotContent);
 
     // Check if Graphviz is installed
-    await execAsync('dot -V');
+    await execAsync("dot -V");
 
     // Generate SVG
     await execAsync(`dot -Tsvg "${dotFile}" -o "${svgFile}"`);
 
     // Open in VS Code
     const uri = vscode.Uri.file(svgFile);
-    await vscode.commands.executeCommand('vscode.open', uri, vscode.ViewColumn.Beside);
+    await vscode.commands.executeCommand(
+      "vscode.open",
+      uri,
+      vscode.ViewColumn.Beside,
+    );
 
     // Clean up DOT file (keep SVG for viewing)
-    await fs.unlink(dotFile).catch(() => { }); // Ignore errors
+    await fsP.unlink(dotFile).catch(() => {}); // Ignore errors
 
     log.info(`Dependency graph generated and opened: ${svgFile}`);
-  } catch (error: any) {
+  } catch (error) {
     log.error("Failed to generate graph:", error);
 
-    if (error.message.includes('dot') || error.code === 'ENOENT') {
+    if (error.message.includes("dot") || error.code === "ENOENT") {
       // Graphviz not installed
       vscode.window.showErrorMessage(
-        'Graphviz is required to generate dependency graphs. Please install it first.',
+        "Graphviz is required to generate dependency graphs. Please install it first.",
       );
     } else {
-      vscode.window.showErrorMessage(`Failed to generate graph: ${error.message}`);
+      vscode.window.showErrorMessage(
+        `Failed to generate graph: ${error.message}`,
+      );
     }
   }
 }
