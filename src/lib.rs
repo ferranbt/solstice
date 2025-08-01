@@ -1292,7 +1292,7 @@ impl TraceArgs {
         let _ = execute_command(&workspace_path, debug_cmd.clone())?;
 
         let (debug_trace, _) =
-            TraceBuilder::new(&workspace_path).generate_trace(TEMP_FORGE_DUMP_PATH)?;
+            TraceBuilder::new(&workspace_path, TEMP_FORGE_DUMP_PATH).generate_trace()?;
         Ok(debug_trace)
     }
 
@@ -1400,8 +1400,8 @@ fn run_dap_server(workspace_path: &str) -> u64 {
         let input = BufReader::new(stream.try_clone().unwrap());
         let output = BufWriter::new(stream);
 
-        let (debug_trace, _) = TraceBuilder::new(&workspace_path)
-            .generate_trace(TEMP_FORGE_DUMP_PATH)
+        let (debug_trace, _) = TraceBuilder::new(&workspace_path, TEMP_FORGE_DUMP_PATH)
+            .generate_trace()
             .unwrap();
 
         std::fs::write(

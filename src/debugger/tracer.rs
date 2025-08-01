@@ -4,6 +4,8 @@ use crate::debugger::state::{
 };
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
+use dashmap::mapref::one::Ref;
+use dashmap::DashMap;
 use foundry_compilers::artifacts::ast::{self, Node, NodeType};
 use foundry_compilers::artifacts::sourcemap::Jump;
 use foundry_compilers::artifacts::sourcemap::SourceElement;
@@ -23,7 +25,7 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::fs;
 use std::hash::Hash;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use thiserror::Error;
@@ -77,6 +79,23 @@ pub struct DebugNode {
 #[derive(Deserialize)]
 pub struct ContractsDump {
     pub identified_contracts: HashMap<Address, String>,
+    pub sources: Sources,
+}
+
+#[derive(Deserialize)]
+pub struct Sources {
+    pub sources_by_id: HashMap<String, HashMap<u32, Source>>,
+    pub artifacts_by_name: HashMap<String, Vec<DebugNodeArtifact>>,
+}
+
+#[derive(Deserialize)]
+pub struct DebugNodeArtifact {
+    pub file_id: u32,
+}
+
+#[derive(Deserialize)]
+pub struct Source {
+    pub path: PathBuf,
 }
 
 fn load_artifact(
@@ -88,10 +107,7 @@ fn load_artifact(
     Ok(artifact)
 }
 
-fn generate_debug_units(
-    root_path: &Path,
-    contracts_involved: Option<&HashSet<String>>,
-) -> Result<(HashMap<String, DebugUnit>, TraceContext), Box<dyn std::error::Error>> {
+fn generate_debug_units(root_path: &Path) -> Result<TraceContext, Box<dyn std::error::Error>> {
     tracing::info!("Generating debug units...");
     let config: ProjectPathsConfig<SolData> =
         ProjectPathsConfig::dapptools(Path::new(root_path)).unwrap();
@@ -105,7 +121,6 @@ fn generate_debug_units(
     let mut trace_context = TraceContext::new();
 
     tracing::info!("Found {} cache entries", cache.len());
-    let mut debug_unit = HashMap::new();
 
     for cache_entry in cache.entries() {
         let local_file_path = cache_entry.source_name.clone();
@@ -114,7 +129,6 @@ fn generate_debug_units(
         let source_name = cache_entry.source_name.clone();
         let source_absolute_path = root_path.join(source_name.clone());
 
-        let source = fs::read_to_string(source_absolute_path.clone()).unwrap();
         tracing::info!(
             "Processing file: {}",
             source_absolute_path.to_str().unwrap_or("unknown")
@@ -190,71 +204,13 @@ fn generate_debug_units(
                 if local_file_path.starts_with("lib/") {
                     continue;
                 }
-
-                // Extract the compilation target contract name from the artifact path.
-                // Each JSON artifact represents one compilation target, but the AST includes
-                // all contracts/nodes from the source file plus imported dependencies.
-                // The filename tells us which specific contract was the compilation target.
-                // IMPORTANT: Bytecode is only available for the compilation target contract.
-                // Attempting to decode other ContractDefinitions with a visitor will fail.
-                // e.g., "Parent.json" = Parent is the target with bytecode, but AST contains Parent + Child + imports
-                let name = absolute_path.file_name().unwrap().to_str().unwrap();
-                let name = name
-                    .split('/')
-                    .next_back()
-                    .unwrap_or("")
-                    .strip_suffix(".json")
-                    .unwrap_or("");
-
-                if let Some(contracts_involved) = contracts_involved {
-                    if !contracts_involved.contains(name) {
-                        continue;
-                    }
-                }
-
-                ast.nodes.iter().for_each(|node| {
-                    let node = node.clone();
-                    let source = source.clone();
-
-                    if let Some(deployed_bytecode) = artifact.deployed_bytecode.as_ref() {
-                        let deployed_bytecode =
-                            deployed_bytecode.bytecode.as_ref().unwrap().clone();
-                        let bytecode = artifact.bytecode.as_ref().unwrap().clone();
-
-                        if node.node_type == NodeType::ContractDefinition {
-                            let contract_name = node.attribute::<String>("name").unwrap();
-
-                            let mut linearized_base_contracts = node
-                                .attribute::<Vec<usize>>("linearizedBaseContracts")
-                                .unwrap();
-                            linearized_base_contracts.reverse();
-
-                            if contract_name == name {
-                                let mut visitor = StatementVisitor::new(
-                                    deployed_bytecode,
-                                    bytecode,
-                                    source_absolute_path.to_str().unwrap().to_string(),
-                                    source,
-                                );
-                                visitor.visit_contract(&node.clone()).unwrap();
-
-                                // just so that we can keep the reference around
-                                let mut dd = visitor.debug_unit;
-                                dd.source_id = artifact.id.unwrap();
-                                dd.linearized_base_contracts = linearized_base_contracts;
-
-                                debug_unit.insert(contract_name, dd);
-                            }
-                        }
-                    }
-                });
             } else {
                 tracing::error!("ast not found");
             }
         }
     }
 
-    Ok((debug_unit, trace_context))
+    Ok(trace_context)
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -346,6 +302,7 @@ type StatementVisitorResult<T> = Result<T, StatementVisitorError>;
 
 impl StatementVisitor {
     pub fn new(
+        contract_name: String,
         deployed_bytecode: CompactBytecode,
         bytecode: CompactBytecode,
         path: String,
@@ -356,6 +313,7 @@ impl StatementVisitor {
             in_constructor: false,
             contract_node: None,
             debug_unit: DebugUnit {
+                contract_name,
                 source_id: 0,
                 path: path.clone(),
                 functions: HashMap::new(),
@@ -1181,76 +1139,236 @@ struct OtherMatchLocation {
 // Builder for generating a trace
 pub struct Builder {
     workspace_path: String,
+    context: DebuggerContext,
+    cache: CompilerCache<SolcSettings>,
+    debug_units: DashMap<u32, Vec<DebugUnit>>,
+    trace_context: Option<TraceContext>,
 }
 
 impl Builder {
-    pub fn new(workspace_path: &str) -> Self {
+    pub fn new(workspace_path: &str, trace_path: &str) -> Self {
+        let content = fs::read_to_string(&trace_path).unwrap();
+        let context: DebuggerContext = serde_json::from_str(&content).unwrap();
+
+        let config: ProjectPathsConfig<SolData> =
+            ProjectPathsConfig::dapptools(Path::new(workspace_path)).unwrap();
+        let cache = CompilerCache::<SolcSettings>::read(&config.cache).unwrap();
+
         Self {
             workspace_path: workspace_path.to_string(),
+            context,
+            cache,
+            debug_units: DashMap::new(),
+            trace_context: None,
         }
     }
 
-    pub fn generate_trace(
-        &self,
-        trace_path: &str,
-    ) -> Result<(DebugTrace, TraceContext), TraceError> {
+    fn find_source_path(&self, source_id: u32) -> Option<PathBuf> {
+        for (_, sources) in self.context.contracts.sources.sources_by_id.iter() {
+            for (file_source_id, source) in sources.iter() {
+                if *file_source_id == source_id {
+                    return Some(source.path.clone());
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_debug_unit(&self, source_id: u32) -> Option<Ref<u32, Vec<DebugUnit>>> {
+        // Generate if not exists
+        if !self.debug_units.contains_key(&source_id) {
+            self.generate_debug_unit(source_id);
+        }
+
+        // Return reference
+        self.debug_units.get(&source_id)
+    }
+
+    pub fn generate_debug_unit(&self, source_id: u32) {
+        let workspace_path = Path::new(&self.workspace_path);
+
+        let config: ProjectPathsConfig<SolData> =
+            ProjectPathsConfig::dapptools(workspace_path).unwrap();
+
+        // compute the debug unit
+        let path = self.find_source_path(source_id);
+        let Some(path) = path else {
+            // if is okay if the path is not found
+            return;
+        };
+
+        // find the cache entry that belongs to this file
+        let Some(entry) = self.cache.entry(path.as_path()) else {
+            panic!("there has to be something here at this point");
+        };
+
+        let source_absolute_path = workspace_path.join(path.clone());
+        let source = fs::read_to_string(source_absolute_path.clone()).unwrap();
+
+        let mut debug_unit = vec![];
+
+        let trace_context = self.trace_context.as_ref().unwrap();
+
+        // read the contracts/artifacts from the cache entry since we cannot know to which contract this source_id belongs
+        for cached_artifact in entry.artifacts() {
+            let artifact_path = config.artifacts.join(&cached_artifact.path);
+            let artifact = load_artifact(&artifact_path).unwrap();
+
+            // Extract the compilation target contract name from the artifact path.
+            // Each JSON artifact represents one compilation target, but the AST includes
+            // all contracts/nodes from the source file plus imported dependencies.
+            // The filename tells us which specific contract was the compilation target.
+            // IMPORTANT: Bytecode is only available for the compilation target contract.
+            // Attempting to decode other ContractDefinitions with a visitor will fail.
+            // e.g., "Parent.json" = Parent is the target with bytecode, but AST contains Parent + Child + imports
+            let name = artifact_path.file_name().unwrap().to_str().unwrap();
+            let name = name
+                .split('/')
+                .next_back()
+                .unwrap_or("")
+                .strip_suffix(".json")
+                .unwrap_or("");
+
+            // TODO: this can be missing
+            let deployed_bytecode = artifact
+                .deployed_bytecode
+                .as_ref()
+                .expect("Deployed bytecode is missing")
+                .bytecode
+                .as_ref()
+                .unwrap()
+                .clone();
+            let bytecode = artifact.bytecode.as_ref().unwrap().clone();
+
+            let ast = artifact.ast.expect("ast not found");
+
+            ast.nodes
+                .iter()
+                .filter(|node| node.node_type == NodeType::ContractDefinition)
+                .for_each(|node| {
+                    let node = node.clone();
+
+                    let contract_name = node.attribute::<String>("name").unwrap();
+
+                    if name == contract_name {
+                        let mut linearized_base_contracts = node
+                            .attribute::<Vec<usize>>("linearizedBaseContracts")
+                            .unwrap();
+                        linearized_base_contracts.reverse();
+
+                        let mut visitor = StatementVisitor::new(
+                            contract_name,
+                            deployed_bytecode.clone(),
+                            bytecode.clone(),
+                            source_absolute_path.to_str().unwrap().to_string(),
+                            source.clone(),
+                        );
+                        visitor.visit_contract(&node.clone()).unwrap();
+
+                        // just so that we can keep the reference around
+                        let mut dd = visitor.debug_unit;
+                        dd.source_id = artifact.id.unwrap();
+                        dd.linearized_base_contracts = linearized_base_contracts;
+
+                        // get the state variables from the trace context
+                        let state_variables = dd
+                            .linearized_base_contracts
+                            .iter()
+                            .flat_map(|base_contract_id| {
+                                trace_context
+                                    .contract_state_variables
+                                    .get(base_contract_id)
+                                    .unwrap()
+                            })
+                            .copied()
+                            .collect::<Vec<_>>();
+
+                        dd.state_variables = state_variables;
+
+                        debug_unit.push(dd);
+                    }
+                })
+        }
+
+        // we have to insert the debug unit into the cache
+        self.debug_units.insert(source_id, debug_unit);
+
+        println!(
+            "Reading debug unit for source id: {} at path: {:?}",
+            source_id, path,
+        );
+    }
+
+    pub fn for_each_debug_unit<F>(&self, mut f: F)
+    where
+        F: FnMut(u32, &DebugUnit),
+    {
+        for entry in self.debug_units.iter() {
+            let source_id = *entry.key();
+            for debug_unit in entry.value().iter() {
+                f(source_id, debug_unit);
+            }
+        }
+    }
+
+    pub fn get_debug_unit_from_name(&self, name: &str) -> Option<DebugUnit> {
+        let Some(artifact_vec) = self.context.contracts.sources.artifacts_by_name.get(name) else {
+            panic!("Artifact not found");
+        };
+
+        // now we have all the contracts with that name
+        // if there is more than one we cannot process this so we bail out for now
+        if artifact_vec.len() > 1 {
+            panic!("Multiple artifacts found for contract name: {}", name);
+        }
+
+        let file_id = artifact_vec[0].file_id;
+        println!("File id for artifact {}: file_id {}", name, file_id);
+
+        // since we have already discarded that there is more than one contract with this name
+        // there is going to be only one contract in the debug unit that matches this one
+        let Some(debug_units) = self.get_debug_unit(file_id) else {
+            panic!("not expected");
+        };
+
+        for debug_unit in debug_units.iter() {
+            if debug_unit.contract_name == name {
+                return Some(debug_unit.clone());
+            }
+        }
+
+        panic!("Not found");
+    }
+
+    pub fn generate_trace(&mut self) -> Result<(DebugTrace, TraceContext), TraceError> {
         let mut metrics_recorder = MetricsRecorder::new();
 
-        let content = fs::read_to_string(trace_path)
-            .map_err(|e| TraceError::FailedToReadFile(trace_path.to_string(), e))?;
-
-        let context: DebuggerContext = serde_json::from_str(&content)
-            .map_err(|e| TraceError::FailedToParseDebugDump(trace_path.to_string(), e))?;
-
         let root_path = Path::new(&self.workspace_path);
-        let (mut debug_units, trace_context) = generate_debug_units(root_path, None).unwrap();
+        let trace_context = generate_debug_units(root_path).unwrap();
+
+        self.trace_context = Some(trace_context.clone());
 
         metrics_recorder.capture(Action::GenerateDebugUnits);
 
-        // for all the debug units resolve the state_variables
-        // we have to do it here before the trace because the scope search requires having the state variables
-        // already set.
-        for debug_unit in debug_units.values_mut() {
-            let state_variables = debug_unit
-                .linearized_base_contracts
-                .iter()
-                .flat_map(|base_contract_id| {
-                    trace_context
-                        .contract_state_variables
-                        .get(base_contract_id)
-                        .unwrap()
-                })
-                .copied()
-                .collect::<Vec<_>>();
-
-            debug_unit.state_variables = state_variables;
-        }
-
         // map each contract to its current storage
         let mut contracts_storage = HashMap::new();
-
-        // get all the debug unit and sort them out by source id
-        let mut debug_units_by_source_id = HashMap::new();
-        for (_, dd) in debug_units.iter() {
-            debug_units_by_source_id
-                .entry(dd.source_id)
-                .or_insert_with(Vec::new)
-                .push(dd.clone());
-        }
 
         metrics_recorder.capture(Action::PrepareDebugUnits);
 
         let mut matched_locations = Vec::new();
 
-        for node in context.debug_arena.iter() {
+        let mut vec_file_index = vec![];
+
+        for node in self.context.debug_arena.iter() {
             // name of the contract in this step
-            let contract = context
+            let contract = self
+                .context
                 .contracts
                 .identified_contracts
                 .get(&node.address)
                 .unwrap();
 
-            let debug_unit = debug_units.get(contract).unwrap();
+            let debug_unit = self.get_debug_unit_from_name(contract).unwrap();
 
             for step in node.steps.iter() {
                 let memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
@@ -1287,16 +1405,32 @@ impl Builder {
                     &debug_unit.deployed_bytecode
                 };
 
-                let ic_index = bytecode.ic_pc_map.get(pc).unwrap();
-                let source_location = bytecode.source_map.get(ic_index).unwrap();
-                let source_id = source_location.index_i32() as u32;
+                let Some(ic_index) = bytecode.ic_pc_map.get(pc) else {
+                    panic!("OK, lets check");
+                };
 
+                let source_location = bytecode.source_map.get(ic_index).unwrap();
+
+                let Some(source_id) = source_location.index() else {
+                    // -1, which means that this is not a source location
+                    continue;
+                };
+
+                vec_file_index.push(source_id);
+
+                let Some(debug_units_to_test) = self.get_debug_unit(source_id) else {
+                    // if we do not have a debug unit for this source id, we cannot match it
+                    continue;
+                };
+
+                /*
                 let debug_units_to_test =
                     if let Some(debug_unit) = debug_units_by_source_id.get(&source_id) {
                         debug_unit
                     } else {
                         continue;
                     };
+                */
 
                 for debug_unit_to_test in debug_units_to_test.iter() {
                     if let (Some(loc), mut vars) =
@@ -1339,6 +1473,13 @@ impl Builder {
                 });
             }
         }
+
+        let unique: Vec<u32> = vec_file_index
+            .into_iter()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        println!("unique entries: {}", unique.len());
 
         metrics_recorder.capture(Action::MatchLocations);
 
@@ -1492,7 +1633,7 @@ impl Builder {
 
         // loop over all the debug units and get the variable definitions
         let mut variable_definitions = HashMap::new();
-        for debug_unit in debug_units.values() {
+        self.for_each_debug_unit(|_, debug_unit| {
             for variable in debug_unit.variables.iter() {
                 variable_definitions.insert(variable.id, variable.clone());
             }
@@ -1509,7 +1650,7 @@ impl Builder {
 
                 variable_definitions.insert(id as u64, var);
             }
-        }
+        });
 
         // resolve the type of all the variables we have in variable_definitions so far since
         // those are the ones we are going to be used in the trace
@@ -1521,7 +1662,7 @@ impl Builder {
         }
 
         // we are doing it after the rest to make sure all the variables are included in variable_definitions
-        for debug_unit in debug_units.values() {
+        self.for_each_debug_unit(|_, debug_unit| {
             // compute the assignemnts and offsets for the state variables that are not constants
             let non_constante_state_variables: Vec<(Variable, Type)> = debug_unit
                 .state_variables
@@ -1557,7 +1698,7 @@ impl Builder {
             {
                 assignments.insert(var.id, Assignment::Storage(*offset));
             }
-        }
+        });
 
         metrics_recorder.capture(Action::GenerateVariableDefinitions);
 
@@ -1576,6 +1717,7 @@ impl Builder {
 
 #[derive(Debug, Clone)]
 pub struct DebugUnit {
+    pub contract_name: String,
     pub path: String,
     pub functions: HashMap<String, Function>,
     // list of state variables in this contract, they are stored in a
@@ -2101,6 +2243,7 @@ mod tests {
                 let contract_ast = artifact.ast.nodes.last().unwrap();
 
                 let mut visitor = StatementVisitor::new(
+                    "".to_string(),
                     deployed_bytecode,
                     bytecode,
                     path.to_string_lossy().to_string(),
@@ -2215,6 +2358,11 @@ mod tests {
                 continue;
             }
 
+            println!(
+                "Running trace for {} in {}",
+                trace_test_case.test_case_function, trace_test_case.test_path
+            );
+
             // TODO: There is an error when calling forge multiple times, the ast files are
             // not updated correctly. So, we need to remove the out directory on every test run.
             let out_dir = Path::new(workspace_path).join("out");
@@ -2238,9 +2386,10 @@ mod tests {
                 debug_trace_path.as_str(),
             );
             let _ = execute_command(workspace_path, forge).unwrap();
-            let (debug_trace, trace_context) = Builder::new(workspace_path)
-                .generate_trace(debug_trace_path.as_str())
-                .unwrap();
+            let (debug_trace, trace_context) =
+                Builder::new(workspace_path, debug_trace_path.as_str())
+                    .generate_trace()
+                    .unwrap();
 
             // save the debug trace
             let debug_trace_json = serde_json::to_string(&debug_trace).unwrap();
