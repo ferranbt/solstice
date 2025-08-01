@@ -2007,7 +2007,7 @@ contract TestContract {{
         contract: &str,
     ) -> eyre::Result<DebugTrace> {
         // write the file into testcases test/debug directory
-        let workspace_path = std::env::var("CARGO_MANIFEST_DIR")? + "/src/testcases";
+        let workspace_path = std::env::var("CARGO_MANIFEST_DIR")? + "/src/debugger/testcases";
         let test_dir = workspace_path.clone() + "/test/debug";
 
         // TODO: https://github.com/ferranbt/solstice/issues/50
