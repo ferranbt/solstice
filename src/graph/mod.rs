@@ -42,15 +42,15 @@ impl Graph {
         // Add nodes with labels
         for (index, path) in self.paths.iter().enumerate() {
             let label = path.to_string_lossy();
-            dot.push_str(&format!("  {} [label=\"{}\"];\n", index, label));
+            dot.push_str(&format!("  {index} [label=\"{label}\"];\n"));
         }
 
-        dot.push_str("\n");
+        dot.push('\n');
 
         // Add edges
         for (&from, neighbors) in &self.adjacency_list {
             for &to in neighbors {
-                dot.push_str(&format!("  {} -> {};\n", from, to));
+                dot.push_str(&format!("  {from} -> {to};\n"));
             }
         }
 

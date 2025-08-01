@@ -1238,7 +1238,7 @@ impl Backend {
     }
 }
 
-fn is_forge_std_path(path: &PathBuf) -> bool {
+fn is_forge_std_path(path: &Path) -> bool {
     path.starts_with("lib/forge-std")
 }
 
