@@ -2,7 +2,6 @@ use crate::debugger::metrics::{Action, MetricsRecorder};
 use crate::debugger::state::{
     parse_variable_declaration_type, StateReference, StoragePosition, Type,
 };
-use crate::forge::Forge;
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use dashmap::mapref::one::Ref;
@@ -1917,6 +1916,7 @@ mod tests {
     use super::*;
     use crate::debugger::debugger::Debugger;
     use crate::debugger::state::testing::compile_contract;
+    use crate::forge::Forge;
     use std::fmt::{Display, Write};
     use std::path::PathBuf;
 

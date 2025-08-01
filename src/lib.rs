@@ -1304,6 +1304,7 @@ impl TraceArgs {
 
         let _ = Forge::new()
             .expect("Failed to find forge")
+            .workspace_path(&workspace_path)
             .debug(&self.match_test, &self.match_path, TEMP_FORGE_DUMP_PATH)
             .execute()?;
 
