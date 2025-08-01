@@ -2,7 +2,8 @@ use builder::{error_type_to_code, get_type_definition, DefinitionIndex};
 use built_info::PKG_VERSION;
 use clap::{Args, Parser, Subcommand};
 use dashmap::mapref::entry::Entry;
-use debugger::DapDebugger;
+use debugger::debugger::DapDebugger;
+use debugger::tracer::{execute_command, Builder as TraceBuilder};
 use forge_fmt::fmt;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -17,14 +18,13 @@ use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::request::GotoTypeDefinitionResponse;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tracer::{execute_command, generate_trace};
 
 use crate::builder::{Builder, Files, GlobalCache};
 use crate::builder::{DefinitionType, Hints};
 use crate::config::Config;
+use crate::debugger::tracer::{DebugTrace, Forge};
 use crate::position_tracker::PositionTracker;
 use crate::symbol_indexer::SymbolIndexer;
-use crate::tracer::{DebugTrace, Forge};
 use pprof::protos::Message;
 use std::collections::HashMap;
 use std::io::Write;
@@ -37,23 +37,19 @@ use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use tokio::net::TcpStream;
 
-use crate::dap::Server as DapServer;
+use crate::debugger::dap::Server as DapServer;
 
 // Include the generated-file as a separate module
 pub mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
-// mod dap;
 mod builder;
 mod config;
-mod dap;
 mod debugger;
-mod metrics;
 mod position_tracker;
-mod state;
 mod symbol_indexer;
-mod tracer;
+
 struct Backend {
     client: Client,
     files: Arc<Files>,
@@ -1295,7 +1291,8 @@ impl TraceArgs {
         let debug_cmd = Forge::debug(&self.match_test, &self.match_path, TEMP_FORGE_DUMP_PATH);
         let _ = execute_command(&workspace_path, debug_cmd.clone())?;
 
-        let (debug_trace, _) = generate_trace(&workspace_path, TEMP_FORGE_DUMP_PATH)?;
+        let (debug_trace, _) =
+            TraceBuilder::new(&workspace_path, TEMP_FORGE_DUMP_PATH)?.generate_trace()?;
         Ok(debug_trace)
     }
 
@@ -1403,7 +1400,10 @@ fn run_dap_server(workspace_path: &str) -> u64 {
         let input = BufReader::new(stream.try_clone().unwrap());
         let output = BufWriter::new(stream);
 
-        let (debug_trace, _) = generate_trace(&workspace_path, TEMP_FORGE_DUMP_PATH).unwrap();
+        let (debug_trace, _) = TraceBuilder::new(&workspace_path, TEMP_FORGE_DUMP_PATH)
+            .unwrap()
+            .generate_trace()
+            .unwrap();
 
         std::fs::write(
             "/tmp/full_trace_dump.json",
