@@ -1979,6 +1979,7 @@ const SKIP_TRACE_LIST: &[&str] = &[
     "UINT256_MAX",
     "CREATE2_FACTORY",
     "IS_TEST",
+    "FAILED_SLOT",
 ];
 
 #[cfg(test)]
