@@ -25,7 +25,6 @@ use std::fmt::Display;
 use std::fs;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -1807,131 +1806,6 @@ pub struct Instruction {
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct VariableId(pub u64);
 
-#[derive(Debug, Clone)]
-pub struct CommandArgs {
-    args: Vec<String>,
-}
-
-impl CommandArgs {
-    fn new() -> Self {
-        Self { args: Vec::new() }
-    }
-
-    fn arg(&mut self, arg: &str) -> &mut Self {
-        self.args.push(arg.to_string());
-        self
-    }
-}
-
-impl IntoIterator for CommandArgs {
-    type Item = String;
-    type IntoIter = std::vec::IntoIter<String>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.args.into_iter()
-    }
-}
-
-impl Display for CommandArgs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.args.join(" "))
-    }
-}
-
-pub fn execute_command(
-    workspace_path: &str,
-    args: CommandArgs,
-) -> std::io::Result<std::process::Output> {
-    let forge_command = find_forge_path().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "'forge' command not found in PATH or common locations",
-        )
-    })?;
-
-    let output = Command::new(forge_command)
-        .current_dir(workspace_path)
-        .args(args.clone())
-        .env("RUST_LOG", "info")
-        .output()?;
-
-    if output.status.success() {
-        Ok(output)
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        Err(std::io::Error::other(format!(
-            "Forge command failed: {workspace_path} {stdout} {stderr}"
-        )))
-    }
-}
-
-fn find_forge_path() -> Option<String> {
-    // Check if 'forge' command exists in PATH
-    if command_exists("forge") {
-        Some("forge".to_string())
-    } else {
-        // Try to find the forge binary in common locations
-        let paths = [
-            "/usr/local/bin/forge",
-            "/usr/bin/forge",
-            "~/.foundry/bin/forge",
-        ];
-        for path in paths.iter() {
-            let expanded_path = shellexpand::tilde(path).to_string();
-            if Path::new(&expanded_path).exists() {
-                return Some(expanded_path);
-            }
-        }
-        None
-    }
-}
-
-// Check if a command exists in PATH
-fn command_exists(cmd: &str) -> bool {
-    Command::new("which")
-        .arg(cmd)
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-pub struct Forge {}
-
-impl Forge {
-    pub fn test(function_name: &str, test_path: &str) -> CommandArgs {
-        let mut cmd = CommandArgs::new();
-        cmd.arg("test")
-            .arg("--match-test")
-            .arg(function_name)
-            .arg("--match-path")
-            .arg(test_path);
-
-        cmd.clone()
-    }
-
-    pub fn debug(function_name: &str, test_path: &str, output_path: &str) -> CommandArgs {
-        let mut cmd = CommandArgs::new();
-        cmd.arg("test")
-            .arg("--debug")
-            .arg("--match-test")
-            .arg(function_name)
-            .arg("--match-path")
-            .arg(test_path)
-            .arg("--dump")
-            .arg(output_path)
-            .arg("--ast")
-            .arg("--optimizer-runs")
-            .arg("0")
-            .arg("--optimize")
-            .arg("false")
-            .arg("-vvvvv"); // we need to run with this flag to export the storage changes
-
-        cmd.clone()
-    }
-}
-
 fn is_forge_variable(name: &str) -> bool {
     SKIP_TRACE_LIST.contains(&name)
 }
@@ -2042,6 +1916,7 @@ mod tests {
     use super::*;
     use crate::debugger::debugger::Debugger;
     use crate::debugger::state::testing::compile_contract;
+    use crate::forge::Forge;
     use std::fmt::{Display, Write};
     use std::path::PathBuf;
 
@@ -2359,12 +2234,16 @@ mod tests {
                 path.to_string_lossy().into_owned()
             };
 
-            let forge = Forge::debug(
-                &trace_test_case.test_case_function,
-                &trace_test_case.test_path,
-                debug_trace_path.as_str(),
-            );
-            let _ = execute_command(workspace_path, forge).unwrap();
+            let _ = Forge::new()
+                .expect("Failed to find forge")
+                .workspace_path(workspace_path)
+                .debug(
+                    &trace_test_case.test_case_function,
+                    &trace_test_case.test_path,
+                    debug_trace_path.as_str(),
+                )
+                .execute()?;
+
             let (debug_trace, trace_context) =
                 Builder::new(workspace_path, debug_trace_path.as_str())
                     .unwrap()
