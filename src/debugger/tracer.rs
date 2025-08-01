@@ -16,6 +16,7 @@ use foundry_compilers::cache::CompilerCache;
 use foundry_compilers::resolver::parse::SolData;
 use foundry_compilers::solc::SolcSettings;
 use foundry_compilers::ProjectPathsConfig;
+use rayon::prelude::*;
 use revm_inspectors::tracing::types::CallTraceStep;
 use serde::Deserialize;
 use serde::Serialize;
@@ -42,6 +43,13 @@ impl TraceContext {
             structs: HashMap::new(),
             state_variables: HashMap::new(),
         }
+    }
+
+    pub fn merge(&mut self, other: TraceContext) {
+        self.structs.extend(other.structs);
+        self.state_variables.extend(other.state_variables);
+        self.contract_state_variables
+            .extend(other.contract_state_variables);
     }
 }
 
@@ -105,6 +113,68 @@ fn load_artifact(
     Ok(artifact)
 }
 
+fn retrieve_types(absolute_path: &Path) -> eyre::Result<TraceContext> {
+    let mut trace_context = TraceContext::new();
+
+    let artifact = load_artifact(absolute_path).map_err(|e| {
+        tracing::error!("error loading artifact {:?} {:?}", absolute_path, e);
+        eyre::eyre!("Failed to load artifact: {}", e)
+    })?;
+
+    // insert the contract as well because it can be referenced by other contracts
+    let Some(ast) = artifact.ast else {
+        tracing::warn!("No AST found in artifact for path: {:?}", absolute_path);
+        return Ok(trace_context);
+    };
+
+    // For all the contracts parse and extract struct references into TraceContext
+    // TODO: Merge this with the contract visitor.
+    ast.nodes.iter().for_each(|node| {
+        if node.node_type == NodeType::ContractDefinition {
+            let contract_node = node.clone();
+            let mut contract_state_variables = Vec::new();
+
+            // insert the contract as well because it can be referenced by other contracts
+            // in variable declarations
+            trace_context
+                .structs
+                .insert(contract_node.id.unwrap(), contract_node.clone());
+
+            contract_node.nodes.iter().for_each(|node| {
+                let node_id = node.id.unwrap();
+
+                if node.node_type == NodeType::StructDefinition
+                    || node.node_type == NodeType::UserDefinedValueTypeDefinition
+                    || node.node_type == NodeType::EnumDefinition
+                {
+                    trace_context.structs.insert(node_id, node.clone());
+                } else if node.node_type == NodeType::VariableDeclaration {
+                    // not sure if I have to filter by stateVariable here
+                    let variable =
+                        StatementVisitor::build_debug_variable(node, VariableLocation::Storage)
+                            .expect("variable")
+                            .unwrap();
+
+                    trace_context.state_variables.insert(node_id, variable);
+                    contract_state_variables.push(node_id);
+                }
+            });
+
+            trace_context
+                .contract_state_variables
+                .insert(contract_node.id.unwrap(), contract_state_variables);
+        } else if node.node_type == NodeType::StructDefinition
+            || node.node_type == NodeType::UserDefinedValueTypeDefinition
+            || node.node_type == NodeType::EnumDefinition
+        {
+            let node_id = node.id.unwrap();
+            trace_context.structs.insert(node_id, node.clone());
+        }
+    });
+
+    Ok(trace_context)
+}
+
 fn generate_debug_units(root_path: &Path) -> Result<TraceContext, Box<dyn std::error::Error>> {
     tracing::info!("Generating debug units...");
     let config: ProjectPathsConfig<SolData> =
@@ -116,99 +186,56 @@ fn generate_debug_units(root_path: &Path) -> Result<TraceContext, Box<dyn std::e
         e
     })?;
 
-    let mut trace_context = TraceContext::new();
-
     tracing::info!("Found {} cache entries", cache.len());
 
-    for cache_entry in cache.entries() {
-        let local_file_path = cache_entry.source_name.clone();
+    let ast_to_parse = cache
+        .entries()
+        .flat_map(|cache_entry| {
+            tracing::info!("Processing file: {:?}", cache_entry.source_name);
 
-        let cache_entry = cache.files.get(&local_file_path).unwrap();
-        let source_name = cache_entry.source_name.clone();
-        let source_absolute_path = root_path.join(source_name.clone());
-
-        tracing::info!(
-            "Processing file: {}",
-            source_absolute_path.to_str().unwrap_or("unknown")
-        );
-
-        for (_, mut artifact) in cache_entry.artifacts.clone() {
-            let (_, xx) = artifact.pop_first().expect("expect something here");
-            let cached_artifact = xx.get("default").expect("something here too");
+            // we only want one of the contract artifact since each one contains the whole AST
+            // object for the file and since we want to do a full AST traversal we do not care which one we pick
+            let cached_artifact = cache_entry
+                .artifacts()
+                .next()
+                .expect("expected at least one artifact");
 
             let absolute_path = config.artifacts.join(cached_artifact.path.clone());
-
             if !absolute_path.exists() {
                 // it could be that the artifact does not exists yet, Forge would put values in the cache that
                 // are not in the out directory. For example, if you have independent tests (A, B) and debug test A
                 // test B will show up in the cache directory but it will not have an artifact.
-                continue;
-            }
-            let artifact = load_artifact(&absolute_path).map_err(|e| {
-                tracing::error!("error loading artifact {:?} {:?}", absolute_path, e);
-                e
-            })?;
-
-            if let Some(ast) = artifact.ast.clone() {
-                // For all the contracts parse and extract struct references into TraceContext
-                // TODO: Merge this with the contract visitor.
-                ast.nodes.iter().for_each(|node| {
-                    if node.node_type == NodeType::ContractDefinition {
-                        let contract_node = node.clone();
-                        let mut contract_state_variables = Vec::new();
-
-                        // insert the contract as well because it can be referenced by other contracts
-                        // in variable declarations
-                        trace_context
-                            .structs
-                            .insert(contract_node.id.unwrap(), contract_node.clone());
-
-                        contract_node.nodes.iter().for_each(|node| {
-                            let node_id = node.id.unwrap();
-
-                            if node.node_type == NodeType::StructDefinition
-                                || node.node_type == NodeType::UserDefinedValueTypeDefinition
-                                || node.node_type == NodeType::EnumDefinition
-                            {
-                                trace_context.structs.insert(node_id, node.clone());
-                            } else if node.node_type == NodeType::VariableDeclaration {
-                                // not sure if I have to filter by stateVariable here
-                                let variable = StatementVisitor::build_debug_variable(
-                                    node,
-                                    VariableLocation::Storage,
-                                )
-                                .expect("variable")
-                                .unwrap();
-
-                                trace_context.state_variables.insert(node_id, variable);
-                                contract_state_variables.push(node_id);
-                            }
-                        });
-
-                        trace_context
-                            .contract_state_variables
-                            .insert(contract_node.id.unwrap(), contract_state_variables);
-                    } else if node.node_type == NodeType::StructDefinition
-                        || node.node_type == NodeType::UserDefinedValueTypeDefinition
-                        || node.node_type == NodeType::EnumDefinition
-                    {
-                        let node_id = node.id.unwrap();
-                        trace_context.structs.insert(node_id, node.clone());
-                    }
-                });
-
-                // check if the absolute_path starts with 'lib/'
-                // for now skip all the libs since we cannot parse them yet
-                if local_file_path.starts_with("lib/") {
-                    continue;
-                }
+                None
             } else {
-                tracing::error!("ast not found");
+                Some(absolute_path)
             }
-        }
+        })
+        .collect::<Vec<_>>();
+
+    let results: Vec<TraceContext> = ast_to_parse
+        .par_iter()
+        .filter_map(|absolute_path| {
+            match retrieve_types(absolute_path) {
+                // Much simpler call
+                Ok(context) => Some(context),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to retrieve types for artifact {:?}: {:?}",
+                        absolute_path,
+                        e
+                    );
+                    None
+                }
+            }
+        })
+        .collect();
+
+    let mut final_trace_context = TraceContext::new();
+    for context in results {
+        final_trace_context.merge(context);
     }
 
-    Ok(trace_context)
+    Ok(final_trace_context)
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
