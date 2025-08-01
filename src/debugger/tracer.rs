@@ -21,7 +21,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use slice_group_by::GroupBy;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fmt::Display;
 use std::fs;
 use std::hash::Hash;
@@ -1146,21 +1145,23 @@ pub struct Builder {
 }
 
 impl Builder {
-    pub fn new(workspace_path: &str, trace_path: &str) -> Self {
-        let content = fs::read_to_string(&trace_path).unwrap();
-        let context: DebuggerContext = serde_json::from_str(&content).unwrap();
+    pub fn new(workspace_path: &str, trace_path: &str) -> Result<Self, TraceError> {
+        let content = fs::read_to_string(trace_path)
+            .map_err(|e| TraceError::FailedToReadFile(trace_path.to_string(), e))?;
+        let context: DebuggerContext = serde_json::from_str(&content)
+            .map_err(|e| TraceError::FailedToParseDebugDump(trace_path.to_string(), e))?;
 
         let config: ProjectPathsConfig<SolData> =
             ProjectPathsConfig::dapptools(Path::new(workspace_path)).unwrap();
         let cache = CompilerCache::<SolcSettings>::read(&config.cache).unwrap();
 
-        Self {
+        Ok(Self {
             workspace_path: workspace_path.to_string(),
             context,
             cache,
             debug_units: DashMap::new(),
             trace_context: None,
-        }
+        })
     }
 
     fn find_source_path(&self, source_id: u32) -> Option<PathBuf> {
@@ -1293,9 +1294,9 @@ impl Builder {
         // we have to insert the debug unit into the cache
         self.debug_units.insert(source_id, debug_unit);
 
-        println!(
-            "Reading debug unit for source id: {} at path: {:?}",
-            source_id, path,
+        tracing::info!(
+            "Reading debug unit for source id: {source_id} at path: {:?}",
+            path
         );
     }
 
@@ -1311,33 +1312,35 @@ impl Builder {
         }
     }
 
-    pub fn get_debug_unit_from_name(&self, name: &str) -> Option<DebugUnit> {
+    pub fn get_debug_unit_from_name(&self, name: &str) -> eyre::Result<DebugUnit> {
         let Some(artifact_vec) = self.context.contracts.sources.artifacts_by_name.get(name) else {
-            panic!("Artifact not found");
+            return Err(eyre::eyre!("Artifact not found"));
         };
 
         // now we have all the contracts with that name
         // if there is more than one we cannot process this so we bail out for now
         if artifact_vec.len() > 1 {
-            panic!("Multiple artifacts found for contract name: {}", name);
+            return Err(eyre::eyre!(
+                "Multiple artifacts found for contract name: {}",
+                name
+            ));
         }
 
         let file_id = artifact_vec[0].file_id;
-        println!("File id for artifact {}: file_id {}", name, file_id);
 
         // since we have already discarded that there is more than one contract with this name
         // there is going to be only one contract in the debug unit that matches this one
         let Some(debug_units) = self.get_debug_unit(file_id) else {
-            panic!("not expected");
+            return Err(eyre::eyre!("Debug unit not found"));
         };
 
         for debug_unit in debug_units.iter() {
             if debug_unit.contract_name == name {
-                return Some(debug_unit.clone());
+                return Ok(debug_unit.clone());
             }
         }
 
-        panic!("Not found");
+        Err(eyre::eyre!("Not found"))
     }
 
     pub fn generate_trace(&mut self) -> Result<(DebugTrace, TraceContext), TraceError> {
@@ -1356,8 +1359,6 @@ impl Builder {
         metrics_recorder.capture(Action::PrepareDebugUnits);
 
         let mut matched_locations = Vec::new();
-
-        let mut vec_file_index = vec![];
 
         for node in self.context.debug_arena.iter() {
             // name of the contract in this step
@@ -1405,10 +1406,7 @@ impl Builder {
                     &debug_unit.deployed_bytecode
                 };
 
-                let Some(ic_index) = bytecode.ic_pc_map.get(pc) else {
-                    panic!("OK, lets check");
-                };
-
+                let ic_index = bytecode.ic_pc_map.get(pc).unwrap();
                 let source_location = bytecode.source_map.get(ic_index).unwrap();
 
                 let Some(source_id) = source_location.index() else {
@@ -1416,21 +1414,10 @@ impl Builder {
                     continue;
                 };
 
-                vec_file_index.push(source_id);
-
                 let Some(debug_units_to_test) = self.get_debug_unit(source_id) else {
                     // if we do not have a debug unit for this source id, we cannot match it
                     continue;
                 };
-
-                /*
-                let debug_units_to_test =
-                    if let Some(debug_unit) = debug_units_by_source_id.get(&source_id) {
-                        debug_unit
-                    } else {
-                        continue;
-                    };
-                */
 
                 for debug_unit_to_test in debug_units_to_test.iter() {
                     if let (Some(loc), mut vars) =
@@ -1473,13 +1460,6 @@ impl Builder {
                 });
             }
         }
-
-        let unique: Vec<u32> = vec_file_index
-            .into_iter()
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-        println!("unique entries: {}", unique.len());
 
         metrics_recorder.capture(Action::MatchLocations);
 
@@ -2388,6 +2368,7 @@ mod tests {
             let _ = execute_command(workspace_path, forge).unwrap();
             let (debug_trace, trace_context) =
                 Builder::new(workspace_path, debug_trace_path.as_str())
+                    .unwrap()
                     .generate_trace()
                     .unwrap();
 
