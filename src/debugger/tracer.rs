@@ -116,7 +116,7 @@ fn load_artifact(
 fn retrieve_types(absolute_path: &Path) -> eyre::Result<TraceContext> {
     let mut trace_context = TraceContext::new();
 
-    let artifact = load_artifact(&absolute_path).map_err(|e| {
+    let artifact = load_artifact(absolute_path).map_err(|e| {
         tracing::error!("error loading artifact {:?} {:?}", absolute_path, e);
         eyre::eyre!("Failed to load artifact: {}", e)
     })?;
