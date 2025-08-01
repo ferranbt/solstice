@@ -1247,8 +1247,6 @@ impl Builder {
                 .iter()
                 .filter(|node| node.node_type == NodeType::ContractDefinition)
                 .for_each(|node| {
-                    let node = node.clone();
-
                     let contract_name = node.attribute::<String>("name").unwrap();
 
                     if name == contract_name {
@@ -2195,7 +2193,7 @@ mod tests {
     fn test_debugger_syntax() {
         let workspace_path_string = std::env::var("CARGO_MANIFEST_DIR")
             .expect("CARGO_MANIFEST_DIR not set")
-            + "/src/testcases";
+            + "/src/debugger/testcases";
 
         let workspace_path = workspace_path_string.as_str();
         let test_dir = Path::new(workspace_path).join("syntax");
