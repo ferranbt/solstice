@@ -109,6 +109,22 @@ impl Forge {
         self
     }
 
+    fn new_command(&self, args: CommandArgs) -> ForgeCommand {
+        ForgeCommand {
+            forge_path: self.forge_path.clone(),
+            workspace_path: self.workspace_path.clone(),
+            args,
+        }
+    }
+
+    /// Build a build command
+    pub fn build(&self) -> ForgeCommand {
+        let mut cmd = CommandArgs::new();
+        cmd.arg("build");
+
+        self.new_command(cmd)
+    }
+
     /// Build a test command
     pub fn test(&self, function_name: &str, test_path: &str) -> ForgeCommand {
         let mut cmd = CommandArgs::new();
@@ -118,11 +134,7 @@ impl Forge {
             .arg("--match-path")
             .arg(test_path);
 
-        ForgeCommand {
-            forge_path: self.forge_path.clone(),
-            workspace_path: self.workspace_path.clone(),
-            args: cmd,
-        }
+        self.new_command(cmd)
     }
 
     /// Build a debug command
@@ -143,11 +155,7 @@ impl Forge {
             .arg("false")
             .arg("-vvvvv"); // we need to run with this flag to export the storage changes
 
-        ForgeCommand {
-            forge_path: self.forge_path.clone(),
-            workspace_path: self.workspace_path.clone(),
-            args: cmd,
-        }
+        self.new_command(cmd)
     }
 }
 
