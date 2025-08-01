@@ -3,7 +3,7 @@ use built_info::PKG_VERSION;
 use clap::{Args, Parser, Subcommand};
 use dashmap::mapref::entry::Entry;
 use debugger::debugger::DapDebugger;
-use debugger::tracer::{execute_command, Builder as TraceBuilder};
+use debugger::tracer::Builder as TraceBuilder;
 use forge_fmt::fmt;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,8 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use crate::builder::{Builder, Files, GlobalCache};
 use crate::builder::{DefinitionType, Hints};
 use crate::config::Config;
-use crate::debugger::tracer::{DebugTrace, Forge};
+use crate::debugger::tracer::DebugTrace;
+use crate::forge::Forge;
 use crate::position_tracker::PositionTracker;
 use crate::symbol_indexer::SymbolIndexer;
 use pprof::protos::Message;
@@ -47,6 +48,7 @@ pub mod built_info {
 mod builder;
 mod config;
 mod debugger;
+mod forge;
 mod position_tracker;
 mod symbol_indexer;
 
@@ -856,22 +858,28 @@ impl Backend {
         let workspace = self.workspace.lock().await;
         let workspace_path = workspace.clone();
 
-        let debug_cmd = Forge::test(&function_name, &test_path);
-        let output = execute_command(&workspace_path, debug_cmd.clone());
+        let forge = Forge::new()
+            .expect("Forge not found")
+            .workspace_path(workspace_path);
+
+        let test_cmd = forge.test(&function_name, &test_path);
+        let test_cmd_args = test_cmd.args();
+
+        let output = test_cmd.execute();
 
         match output {
             Ok(output) => {
                 // Send both stdout and stderr to the client
                 self.send_log(
                     "Forge Test".to_string(),
-                    format!("{} {:?}", debug_cmd, output.stdout),
+                    format!("{} {:?}", test_cmd_args, output.stdout),
                 )
                 .await;
             }
             Err(e) => {
                 self.send_log(
                     "Forge Test Error".to_string(),
-                    format!("{debug_cmd} Failed to execute test: {e}"),
+                    format!("{test_cmd_args} Failed to execute test: {e}"),
                 )
                 .await;
             }
@@ -882,8 +890,14 @@ impl Backend {
         let workspace = self.workspace.lock().await;
         let workspace_path = workspace.clone();
 
-        let debug_cmd = Forge::debug(&function_name, &test_path, TEMP_FORGE_DUMP_PATH);
-        let output = execute_command(&workspace_path, debug_cmd.clone());
+        let forge = Forge::new()
+            .expect("Forge not found")
+            .workspace_path(workspace_path.clone());
+
+        let debug_cmd = forge.debug(&function_name, &test_path, TEMP_FORGE_DUMP_PATH);
+        let debug_cmd_args = debug_cmd.args();
+
+        let output = debug_cmd.execute();
 
         match output {
             Ok(output) => {
@@ -912,7 +926,7 @@ impl Backend {
             Err(e) => {
                 self.send_log(
                     "Forge Test Error".to_string(),
-                    format!("{debug_cmd} Failed to execute test: {e}"),
+                    format!("{debug_cmd_args} Failed to execute test: {e}"),
                 )
                 .await;
             }
@@ -1288,8 +1302,10 @@ impl TraceArgs {
                 .to_string()
         });
 
-        let debug_cmd = Forge::debug(&self.match_test, &self.match_path, TEMP_FORGE_DUMP_PATH);
-        let _ = execute_command(&workspace_path, debug_cmd.clone())?;
+        let _ = Forge::new()
+            .expect("Failed to find forge")
+            .debug(&self.match_test, &self.match_path, TEMP_FORGE_DUMP_PATH)
+            .execute()?;
 
         let (debug_trace, _) =
             TraceBuilder::new(&workspace_path, TEMP_FORGE_DUMP_PATH)?.generate_trace()?;
