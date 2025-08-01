@@ -32,11 +32,10 @@ impl std::fmt::Display for ForgeError {
             } => {
                 write!(
                     f,
-                    "Forge command failed in {}: stdout: {}, stderr: {}",
-                    workspace, stdout, stderr
+                    "Forge command failed in {workspace}: stdout: {stdout}, stderr: {stderr}",
                 )
             }
-            ForgeError::IoError(err) => write!(f, "IO error: {}", err),
+            ForgeError::IoError(err) => write!(f, "IO error: {err}"),
         }
     }
 }
