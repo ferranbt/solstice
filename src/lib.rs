@@ -5,6 +5,10 @@ use dashmap::mapref::entry::Entry;
 use debugger::debugger::DapDebugger;
 use debugger::tracer::Builder as TraceBuilder;
 use forge_fmt::fmt;
+use foundry_compilers::cache::CompilerCache;
+use foundry_compilers::resolver::parse::SolData;
+use foundry_compilers::solc::SolcSettings;
+use foundry_compilers::ProjectPathsConfig;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,6 +28,7 @@ use crate::builder::{DefinitionType, Hints};
 use crate::config::Config;
 use crate::debugger::tracer::DebugTrace;
 use crate::forge::Forge;
+use crate::graph::Graph;
 use crate::position_tracker::PositionTracker;
 use crate::symbol_indexer::SymbolIndexer;
 use pprof::protos::Message;
@@ -35,7 +40,7 @@ use std::sync::OnceLock;
 use solang::file_resolver::FileResolver;
 use solang_parser::pt;
 use std::io::{BufReader, BufWriter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::net::TcpStream;
 
 use crate::debugger::dap::Server as DapServer;
@@ -49,6 +54,7 @@ mod builder;
 mod config;
 mod debugger;
 mod forge;
+mod graph;
 mod position_tracker;
 mod symbol_indexer;
 
@@ -135,7 +141,11 @@ impl LanguageServer for Backend {
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["sol.test.file".to_string(), "sol.debug.file".to_string()],
+                    commands: vec![
+                        "sol.test.file".to_string(),
+                        "sol.debug.file".to_string(),
+                        "solstice.generateDependencyGraph".to_string(),
+                    ],
                     work_done_progress_options: Default::default(),
                 }),
                 code_action_provider: Some(CodeActionProviderCapability::Options(
@@ -825,6 +835,20 @@ impl LanguageServer for Backend {
                 params.arguments[1].as_str().unwrap().to_string(),
             )
             .await;
+        } else if params.command == "solstice.generateDependencyGraph" {
+            tracing::info!("Generating dependency graph 2");
+
+            let dot_graph = self.build_dot_graph().await.unwrap();
+            tracing::info!("Generated dot graph: {}", dot_graph);
+
+            let dot_graph_val = serde_json::to_value(dot_graph).unwrap();
+            return Ok(Some(dot_graph_val));
+        } else {
+            return Err(Error {
+                code: ErrorCode::MethodNotFound,
+                message: format!("Unknown command: {}", params.command).into(),
+                data: None,
+            });
         }
 
         Ok(None)
@@ -931,6 +955,43 @@ impl Backend {
                 .await;
             }
         }
+    }
+
+    async fn build_dot_graph(&self) -> eyre::Result<String> {
+        let workspace = self.workspace.lock().await;
+        let workspace_path = workspace.clone();
+        // Use the forge command to build the repository
+
+        let forge = Forge::new()
+            .expect("Forge not found")
+            .workspace_path(workspace_path.clone());
+
+        let _ = forge.build().execute()?;
+
+        let config: ProjectPathsConfig<SolData> =
+            ProjectPathsConfig::dapptools(Path::new(&workspace_path)).unwrap();
+        let cache = CompilerCache::<SolcSettings>::read(&config.cache)?;
+
+        // create a graph with the cache to perform topological sort
+        let mut graph = Graph::new();
+        for cache_entry in cache.entries() {
+            let path_buf: PathBuf = cache_entry.source_name.clone();
+            if is_forge_std_path(&path_buf) {
+                continue;
+            }
+
+            let path_buf_index = graph.add_node(path_buf);
+            for import in cache_entry.imports.clone() {
+                if is_forge_std_path(&import) {
+                    continue;
+                }
+
+                let import_index = graph.add_node(import.clone());
+                graph.add_edge(import_index, path_buf_index);
+            }
+        }
+        let dot_graph = graph.to_dot();
+        Ok(dot_graph)
     }
 
     fn position_in_range(&self, position: &Position, range: &Range) -> bool {
@@ -1175,6 +1236,10 @@ impl Backend {
             }
         });
     }
+}
+
+fn is_forge_std_path(path: &PathBuf) -> bool {
+    path.starts_with("lib/forge-std")
 }
 
 // Helper function definition

@@ -66,8 +66,22 @@
       {
         "command": "sol.startDebug",
         "title": "Start Debug Session"
+      },
+      {
+        "command": "solstice.showDependencyGraph",
+        "title": "Show Dependency Graph",
+        "category": "Solstice",
+        "icon": "$(graph)"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "solstice.showDependencyGraph",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
     "configuration": [
       {
         "title": "general",

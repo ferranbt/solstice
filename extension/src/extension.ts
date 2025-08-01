@@ -112,6 +112,21 @@ export async function activate(context: ExtensionContext) {
     ),
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "solstice.showDependencyGraph",
+      async () => {
+        try {
+          let graph: string = await vscode.commands.executeCommand("solstice.generateDependencyGraph");
+          await generateAndShowGraph(graph);
+
+        } catch (error) {
+          log.error("Failed to generate dependency graph:", error);
+        }
+      },
+    )
+  );
+
   const showImportPicker = vscode.commands.registerCommand(
     "solidity.showImportPicker",
     async (actions: { label: string; arguments: CodeAction }[]) => {
@@ -245,8 +260,7 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 class MockDebugAdapterNamedPipeServerDescriptorFactory
-  implements vscode.DebugAdapterDescriptorFactory
-{
+  implements vscode.DebugAdapterDescriptorFactory {
   private _server?: Net.Server;
 
   createDebugAdapterDescriptor(
@@ -500,4 +514,50 @@ async function downloadSolsticeRelease(solsticePath: string, version: string) {
   fs.chmodSync(solsticePath, 0o755);
 
   return solsticePath;
+}
+
+async function generateAndShowGraph(dotContent: string): Promise<void> {
+  const os = require('os');
+  const path = require('path');
+  const fs = require('fs').promises;
+  const { exec } = require('child_process');
+  const { promisify } = require('util');
+  const execAsync = promisify(exec);
+
+  try {
+    // Create temp files
+    const tempDir = os.tmpdir();
+    const timestamp = Date.now();
+    const dotFile = path.join(tempDir, `solstice-deps-${timestamp}.dot`);
+    const svgFile = path.join(tempDir, `solstice-deps-${timestamp}.svg`);
+
+    // Write DOT content
+    await fs.writeFile(dotFile, dotContent);
+
+    // Check if Graphviz is installed
+    await execAsync('dot -V');
+
+    // Generate SVG
+    await execAsync(`dot -Tsvg "${dotFile}" -o "${svgFile}"`);
+
+    // Open in VS Code
+    const uri = vscode.Uri.file(svgFile);
+    await vscode.commands.executeCommand('vscode.open', uri, vscode.ViewColumn.Beside);
+
+    // Clean up DOT file (keep SVG for viewing)
+    await fs.unlink(dotFile).catch(() => { }); // Ignore errors
+
+    log.info(`Dependency graph generated and opened: ${svgFile}`);
+  } catch (error: any) {
+    log.error("Failed to generate graph:", error);
+
+    if (error.message.includes('dot') || error.code === 'ENOENT') {
+      // Graphviz not installed
+      vscode.window.showErrorMessage(
+        'Graphviz is required to generate dependency graphs. Please install it first.',
+      );
+    } else {
+      vscode.window.showErrorMessage(`Failed to generate graph: ${error.message}`);
+    }
+  }
 }
