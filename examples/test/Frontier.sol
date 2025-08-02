@@ -24,7 +24,7 @@ contract FooTest is Test {
         value_storage = 3;
         simple_call();
         value = value + simple_call();
-        value = value + call_with_params(11, 22);
+        value = value + xxxx(11, 22);
         assert(value != block.number);
     }
 
