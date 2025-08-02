@@ -1841,8 +1841,6 @@ impl<'a> Builder<'a> {
             })
             .collect::<Vec<usize>>();
 
-        println!("Files missing licenses : {:?}", spdx_license_missing);
-
         let unknown_type_diag = self
             .ns
             .diagnostics
