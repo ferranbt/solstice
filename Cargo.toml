@@ -45,8 +45,8 @@ rustc-hash = "1.1"
 semver = "1"
 dap = "0.4.1-alpha1"
 clap = { version = "4.5.16", features = ["derive"] }
-solang-parser = { git = "http://github.com/ferranbt/solang", branch = "solstice" }
-solang = { git = "http://github.com/ferranbt/solang", branch = "solstice", default-features = false }
+solang-parser = { git = "http://github.com/ferranbt/solang", rev = "6e27d6dbbbc75e672f2ea2d85a712990fca78105" }
+solang = { git = "http://github.com/ferranbt/solang", rev = "6e27d6dbbbc75e672f2ea2d85a712990fca78105", default-features = false }
 forge-fmt = "0.2.0"
 anstream = "0.6.18"
 arbitrary = { version = "1", features = ["derive"] }
@@ -64,6 +64,9 @@ shellexpand = "3.1.1"
 pprof = { version = "0.15.0", features = ["flamegraph", "frame-pointer", "prost-codec"] }
 regex = "1.10"
 pathdiff = "0.2"
+
+# solang-parser = { path = "../solang/solang-parser" }
+# solang = { path = "../solang", default-features = false }
 
 [build-dependencies]
 built = { version = "0.7.1", features = ["git2", "chrono"] }

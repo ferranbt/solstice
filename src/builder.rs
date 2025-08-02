@@ -116,6 +116,7 @@ pub struct FileCache {
     pub top_level_code_objects: HashMap<String, Option<DefinitionIndex>>,
     pub unknown_types: Vec<(Range, String)>,
     pub available_hints: Vec<InlayHint>,
+    pub missing_license: bool,
 }
 
 fn end_of_block_hint(func_name: String, loc: Range) -> InlayHint {
@@ -1827,6 +1828,19 @@ impl<'a> Builder<'a> {
             }
         }
 
+        let spdx_license_missing = self
+            .ns
+            .diagnostics
+            .iter()
+            .flat_map(|diag| {
+                if diag.message == "missing SPDX license" {
+                    Some(diag.loc.file_no())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<usize>>();
+
         let unknown_type_diag = self
             .ns
             .diagnostics
@@ -1908,6 +1922,7 @@ impl<'a> Builder<'a> {
                     .filter(|(file_no, _, _)| *file_no == i)
                     .map(|(_, loc, type_name)| (*loc, type_name.clone()))
                     .collect(),
+                missing_license: spdx_license_missing.contains(&i),
                 available_hints: self
                     .ns
                     .functions

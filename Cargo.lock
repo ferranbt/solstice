@@ -6680,7 +6680,7 @@ dependencies = [
 [[package]]
 name = "solang"
 version = "0.3.3"
-source = "git+http://github.com/ferranbt/solang?branch=solstice#d0f5de661a465bdb7428364a978ffa852c0d9c55"
+source = "git+http://github.com/ferranbt/solang?rev=6e27d6dbbbc75e672f2ea2d85a712990fca78105#6e27d6dbbbc75e672f2ea2d85a712990fca78105"
 dependencies = [
  "anchor-syn",
  "base58",
@@ -6699,7 +6699,7 @@ dependencies = [
  "indexmap 2.9.0",
  "ink_env",
  "ink_metadata",
- "itertools 0.13.0",
+ "itertools 0.10.5",
  "normalize-path",
  "num-bigint",
  "num-integer",
@@ -6746,7 +6746,7 @@ dependencies = [
 [[package]]
 name = "solang-parser"
 version = "0.3.3"
-source = "git+http://github.com/ferranbt/solang?branch=solstice#d0f5de661a465bdb7428364a978ffa852c0d9c55"
+source = "git+http://github.com/ferranbt/solang?rev=6e27d6dbbbc75e672f2ea2d85a712990fca78105#6e27d6dbbbc75e672f2ea2d85a712990fca78105"
 dependencies = [
  "itertools 0.12.1",
  "lalrpop",

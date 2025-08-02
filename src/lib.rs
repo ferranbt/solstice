@@ -532,7 +532,42 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         let path = uri.clone().to_file_path().unwrap();
 
+        let mut actions = Vec::new();
+
         if let Some(cache) = self.files.caches.get(&path) {
+            if params.range.start.line == 0 && cache.missing_license {
+                let action = CodeAction {
+                    title: "Add SPDX License".to_string(),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    is_preferred: Some(true),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some({
+                            let mut changes = std::collections::HashMap::new();
+                            changes.insert(
+                                uri.clone(),
+                                vec![TextEdit {
+                                    range: Range {
+                                        start: Position {
+                                            line: 0,
+                                            character: 0,
+                                        },
+                                        end: Position {
+                                            line: 0,
+                                            character: 0,
+                                        },
+                                    },
+                                    new_text: "// SPDX-License-Identifier: UNLICENSE\n".to_string(),
+                                }],
+                            );
+                            changes
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
+
             if let Some(reference) = cache
                 .unknown_types
                 .iter()
@@ -544,8 +579,6 @@ impl LanguageServer for Backend {
                 if let Some(symbol_locations) =
                     self.symbol_indexer.find_symbol_locations(unknown_type)
                 {
-                    let mut actions = Vec::new();
-
                     for location in symbol_locations {
                         // we need to create an import location from the uri path to the location.file_path
                         let res = pathdiff::diff_paths(
@@ -571,15 +604,15 @@ impl LanguageServer for Backend {
 
                         actions.push(CodeActionOrCommand::CodeAction(action));
                     }
-
-                    if !actions.is_empty() {
-                        return Ok(Some(actions));
-                    }
                 }
             }
         }
 
-        Ok(None)
+        if !actions.is_empty() {
+            Ok(Some(actions))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
