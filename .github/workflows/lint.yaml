@@ -27,4 +27,7 @@ jobs:
         run: just lint
 
       - name: Format code
-        run: just check_format
+        run: just check-format
+
+      - name: Check documentation is up to date
+        run: just check-docs

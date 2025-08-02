@@ -19,5 +19,13 @@ override-traces:
 lint:
 	cargo clippy -- -D warnings
 
-check_format:
+check-format:
 	cargo fmt -- --check
+
+# Generate config documentation
+generate-docs:
+    ACTION=generate cargo test --package solstice --lib -- config::test::test_generate_config_markdown --exact --show-output
+
+# Validate config documentation is up to date  
+check-docs:
+    ACTION=validate cargo test --package solstice --lib -- config::test::test_generate_config_markdown --exact --show-output

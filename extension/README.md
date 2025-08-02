@@ -19,6 +19,11 @@ Solstice is an ambitious VSCode extension built with a Rust Language Server Prot
 - Import resolution - Automatic path suggestions and dependency management
 - Code lenses - Quick actions for running tests and executing functions
 
+## ⚙️ Configuration
+
+Solstice offers configuration options for inlay hints, diagnostic behavior, and code formatting preferences.
+See ![Configuration Documentation](https://github.com/ferranbt/solstice/blob/main/docs/configuration.md) for all available options.
+
 ---
 
 ## 🤝 Contributing
