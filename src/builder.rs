@@ -18,10 +18,10 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
-use tower_lsp::lsp_types::{
+use tower_lsp_server::lsp_types::{
     DidChangeTextDocumentParams, InlayHint, InlayHintLabel, TextDocumentContentChangeEvent,
 };
-use tower_lsp::lsp_types::{Position, Range};
+use tower_lsp_server::lsp_types::{Position, Range};
 
 use crate::config::Config;
 
@@ -2107,10 +2107,11 @@ fn retrieve_type_name_from_diagnostic(message: String) -> Option<String> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use tower_lsp::lsp_types::{
-        DidChangeTextDocumentParams, TextDocumentContentChangeEvent, Url,
+    use tower_lsp_server::lsp_types::{
+        DidChangeTextDocumentParams, TextDocumentContentChangeEvent, Uri,
         VersionedTextDocumentIdentifier,
     };
+    use tower_lsp_server::UriExt;
 
     #[test]
     fn test_retrieve_type_name() {
@@ -2172,7 +2173,7 @@ mod test {
 
         let params = DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier {
-                uri: Url::from_file_path(&path).unwrap(),
+                uri: Uri::from_file_path(&path).unwrap(),
                 version: 1,
             },
             content_changes: vec![TextDocumentContentChangeEvent {
@@ -2198,7 +2199,7 @@ mod test {
 
         let params = DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier {
-                uri: Url::from_file_path(&path).unwrap(),
+                uri: Uri::from_file_path(&path).unwrap(),
                 version: 2,
             },
             content_changes: vec![TextDocumentContentChangeEvent {
@@ -2224,7 +2225,7 @@ mod test {
 
         let params = DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier {
-                uri: Url::from_file_path(&path).unwrap(),
+                uri: Uri::from_file_path(&path).unwrap(),
                 version: 2,
             },
             content_changes: vec![TextDocumentContentChangeEvent {
@@ -2259,7 +2260,7 @@ mod test {
 
         let params = DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier {
-                uri: Url::from_file_path(&path).unwrap(),
+                uri: Uri::from_file_path(&path).unwrap(),
                 version: 2,
             },
             content_changes: vec![

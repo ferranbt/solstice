@@ -17,11 +17,12 @@ use solang::sema::builtin::{BUILTIN_FUNCTIONS, BUILTIN_METHODS, BUILTIN_VARIABLE
 use solang::sema::builtin_structs::BUILTIN_STRUCTS;
 use solang::{parse_and_resolve, Target};
 use tokio::sync::Mutex;
-use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
-use tower_lsp::lsp_types::notification::Notification;
-use tower_lsp::lsp_types::request::GotoTypeDefinitionResponse;
-use tower_lsp::lsp_types::*;
-use tower_lsp::{Client, LanguageServer, LspService, Server};
+use tower_lsp_server::jsonrpc::{Error, ErrorCode, Result};
+use tower_lsp_server::lsp_types::notification::Notification;
+use tower_lsp_server::lsp_types::request::GotoTypeDefinitionResponse;
+use tower_lsp_server::lsp_types::*;
+use tower_lsp_server::UriExt;
+use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 use crate::builder::{Builder, Files, GlobalCache};
 use crate::builder::{DefinitionType, Hints};
@@ -90,7 +91,6 @@ impl Notification for CustomNotification2 {
     const METHOD: &'static str = "custom/logToChannel2";
 }
 
-#[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         let mut config = Config::default();
@@ -105,10 +105,11 @@ impl LanguageServer for Backend {
         let mut config_guard = self.config.lock().await;
         *config_guard = config.clone();
 
+        #[allow(deprecated)]
         let workspace = params.root_uri.unwrap_or_else(|| {
             // If no root URI is provided, use the current directory as the workspace
             // In E2E tests, this is the case.
-            Url::from_file_path(std::env::current_dir().unwrap()).unwrap()
+            Uri::from_file_path(std::env::current_dir().unwrap()).unwrap()
         });
         let workspace_path = workspace.path().to_string();
 
@@ -190,14 +191,14 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
 
         match uri.to_file_path() {
-            Ok(path) => {
+            Some(path) => {
                 self.files
                     .update_text_file(&path, params.text_document.text);
                 self.parse_file(uri, version, true).await;
             }
-            Err(_) => {
+            None => {
                 self.client
-                    .log_message(MessageType::ERROR, format!("received invalid URI: {uri}"))
+                    .log_message(MessageType::ERROR, format!("received invalid URI: {uri:?}"))
                     .await;
             }
         }
@@ -208,7 +209,9 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.clone();
 
         match uri.to_file_path() {
-            Ok(path) => {
+            Some(path) => {
+                let path = path.into_owned();
+
                 // Adjust existing hint positions
                 let had_hints = self
                     .adjust_cached_hints(&path, &params.content_changes, version)
@@ -222,9 +225,9 @@ impl LanguageServer for Backend {
                 self.files.update_partial_text_file(&path, params);
                 self.parse_file(uri, version, false).await;
             }
-            Err(_) => {
+            None => {
                 self.client
-                    .log_message(MessageType::ERROR, format!("received invalid URI: {uri}"))
+                    .log_message(MessageType::ERROR, format!("received invalid URI: {uri:?}"))
                     .await;
             }
         }
@@ -235,7 +238,7 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
 
         if let Some(text) = params.text {
-            if let Ok(path) = uri.to_file_path() {
+            if let Some(path) = uri.to_file_path() {
                 self.files.update_text_file(&path, text);
             }
         }
@@ -273,8 +276,8 @@ impl LanguageServer for Backend {
 
         let uri = txtdoc.uri;
 
-        if let Ok(path) = uri.to_file_path() {
-            if let Some(cache) = self.files.caches.get(&path) {
+        if let Some(path) = uri.to_file_path() {
+            if let Some(cache) = self.files.caches.get(&path.into_owned()) {
                 if let Some(offset) = cache
                     .file
                     .get_offset(pos.line as usize, pos.character as usize)
@@ -303,11 +306,14 @@ impl LanguageServer for Backend {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = params.text_document.uri;
-        let source_path = uri.to_file_path().map_err(|_| Error {
-            code: ErrorCode::InvalidRequest,
-            message: format!("Received invalid URI: {uri}").into(),
-            data: None,
-        })?;
+        let source_path = uri
+            .to_file_path()
+            .ok_or_else(|| Error {
+                code: ErrorCode::InvalidRequest,
+                message: format!("Received invalid URI: {uri:?}").into(),
+                data: None,
+            })?
+            .into_owned();
 
         if let Some(file_hints) = self.files.hints.get(&source_path) {
             // check if there is any function in scope
@@ -337,7 +343,7 @@ impl LanguageServer for Backend {
         let location = definitions
             .get(&reference)
             .map(|range| {
-                let uri = Url::from_file_path(&reference.def_path).unwrap();
+                let uri = Uri::from_file_path(&reference.def_path).unwrap();
                 Location { uri, range: *range }
             })
             .map(GotoTypeDefinitionResponse::Scalar);
@@ -357,6 +363,7 @@ impl LanguageServer for Backend {
 
         let new_text = params.new_name;
 
+        #[allow(clippy::mutable_key_type)]
         let ws = self
             .files
             .caches
@@ -365,7 +372,7 @@ impl LanguageServer for Backend {
                 let p = entry.key();
                 let cache = entry.value();
 
-                let uri = Url::from_file_path(p).unwrap();
+                let uri = Uri::from_file_path(p).unwrap();
                 let text_edits: Vec<_> = cache
                     .references
                     .iter()
@@ -403,7 +410,7 @@ impl LanguageServer for Backend {
                 let p = entry.key();
                 let cache = entry.value();
 
-                let uri = Url::from_file_path(p).unwrap();
+                let uri = Uri::from_file_path(p).unwrap();
                 cache
                     .references
                     .iter()
@@ -419,7 +426,7 @@ impl LanguageServer for Backend {
         // remove the definition location if `include_declaration` is `false`
         if !params.context.include_declaration {
             let definitions = &self.global_cache.lock().await.definitions;
-            let uri = Url::from_file_path(&reference.def_path).unwrap();
+            let uri = Uri::from_file_path(&reference.def_path).unwrap();
             if let Some(range) = definitions.get(&reference) {
                 let def = Location { uri, range: *range };
                 locations.retain(|loc| loc != &def);
@@ -441,11 +448,14 @@ impl LanguageServer for Backend {
 
         // get parse tree for the input file
         let uri = params.text_document.uri;
-        let source_path = uri.to_file_path().map_err(|_| Error {
-            code: ErrorCode::InvalidRequest,
-            message: format!("Received invalid URI: {uri}").into(),
-            data: None,
-        })?;
+        let source_path = uri
+            .to_file_path()
+            .ok_or_else(|| Error {
+                code: ErrorCode::InvalidRequest,
+                message: format!("Received invalid URI: {uri:?}").into(),
+                data: None,
+            })?
+            .into_owned();
 
         let source = self
             .files
@@ -453,7 +463,7 @@ impl LanguageServer for Backend {
             .get(&source_path)
             .ok_or_else(|| Error {
                 code: ErrorCode::InvalidRequest,
-                message: format!("File not found: {uri}").into(),
+                message: format!("File not found: {uri:?}").into(),
                 data: None,
             })?;
 
@@ -462,7 +472,7 @@ impl LanguageServer for Backend {
             Err(e) => {
                 // This most likely is a syntax error on the user part. If we were to return an error
                 // it would show up as a modal window in the editor, which is not ideal.
-                tracing::debug!("Failed to format file: {}: {}", uri, e);
+                tracing::debug!("Failed to format file: {:?}: {}", uri, e);
                 return Ok(None);
             }
         };
@@ -499,6 +509,7 @@ impl LanguageServer for Backend {
         let mut params = params.clone();
         params.edit = Some(WorkspaceEdit {
             changes: Some({
+                #[allow(clippy::mutable_key_type)]
                 let mut changes = std::collections::HashMap::new();
                 changes.insert(
                     metadata.target_file,
@@ -530,7 +541,7 @@ impl LanguageServer for Backend {
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
-        let path = uri.clone().to_file_path().unwrap();
+        let path = uri.clone().to_file_path().unwrap().into_owned();
 
         let mut actions = Vec::new();
 
@@ -542,6 +553,7 @@ impl LanguageServer for Backend {
                     is_preferred: Some(true),
                     edit: Some(WorkspaceEdit {
                         changes: Some({
+                            #[allow(clippy::mutable_key_type)]
                             let mut changes = std::collections::HashMap::new();
                             changes.insert(
                                 uri.clone(),
@@ -625,7 +637,7 @@ impl LanguageServer for Backend {
 
         let declarations = &self.global_cache.lock().await.definitions;
 
-        if let Some(cache) = self.files.caches.get(&path) {
+        if let Some(cache) = self.files.caches.get(&path.into_owned()) {
             let file_path = uri.path();
 
             #[allow(clippy::unnecessary_filter_map)]
@@ -690,13 +702,13 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
-        let path = uri.to_file_path().map_err(|_| Error {
+        let path = uri.to_file_path().ok_or_else(|| Error {
             code: ErrorCode::InvalidRequest,
-            message: format!("Received invalid URI: {uri}").into(),
+            message: format!("Received invalid URI: {uri:?}").into(),
             data: None,
         })?;
 
-        let Some(cache) = self.files.caches.get(&path) else {
+        let Some(cache) = self.files.caches.get(&path.clone().into_owned()) else {
             return Ok(None);
         };
 
@@ -737,7 +749,7 @@ impl LanguageServer for Backend {
                 trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
                 trigger_character: Some(trigger_character),
             }) if trigger_character == "." => {
-                let Some(text_buf) = self.files.text_buffers.get(&path) else {
+                let Some(text_buf) = self.files.text_buffers.get(&path.into_owned()) else {
                     return Ok(None);
                 };
 
@@ -892,13 +904,13 @@ impl LanguageServer for Backend {
 struct CodeActionMetadata {
     unknown_type: String,
     import_location: PathBuf,
-    target_file: Url,
+    target_file: Uri,
 }
 
 const TEMP_FORGE_DUMP_PATH: &str = "/tmp/debug_trace.json";
 
 struct ParseRequest {
-    url: Url,
+    url: Uri,
     version: i32,
     response_tx: tokio::sync::oneshot::Sender<()>,
 }
@@ -1040,13 +1052,13 @@ impl Backend {
         params: GotoDefinitionParams,
     ) -> Result<Option<DefinitionIndex>> {
         let uri = params.text_document_position_params.text_document.uri;
-        let path = uri.to_file_path().map_err(|_| Error {
+        let path = uri.to_file_path().ok_or_else(|| Error {
             code: ErrorCode::InvalidRequest,
-            message: format!("Received invalid URI: {uri}").into(),
+            message: format!("Received invalid URI: {uri:?}").into(),
             data: None,
         })?;
 
-        if let Some(cache) = self.files.caches.get(&path) {
+        if let Some(cache) = self.files.caches.get(&path.into_owned()) {
             let f = &cache.file;
             if let Some(offset) = f.get_offset(
                 params.text_document_position_params.position.line as _,
@@ -1096,7 +1108,7 @@ impl Backend {
         }
     }
 
-    async fn parse_file(&self, uri: Url, version: i32, wait: bool) {
+    async fn parse_file(&self, uri: Uri, version: i32, wait: bool) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let request = ParseRequest {
             url: uri.clone(),
@@ -1106,7 +1118,7 @@ impl Backend {
 
         if let Some(sender) = self.tx.get() {
             if let Err(e) = sender.send(request).await {
-                tracing::error!("Failed to send parse request for: {}: {}", uri, e);
+                tracing::error!("Failed to send parse request for: {:?}: {}", uri, e);
                 return;
             }
         } else {
@@ -1140,7 +1152,7 @@ impl Backend {
         tokio::spawn(async move {
             while let Some(req) = rx.recv().await {
                 tracing::info!(
-                    "Received parse request for: {} version {}",
+                    "Received parse request for: {:?} version {}",
                     req.url,
                     req.version
                 );
@@ -1154,7 +1166,7 @@ impl Backend {
 
                     resolver.set_file_contents(path.to_str().unwrap(), contents);
                 }
-                if let Ok(path) = uri.to_file_path() {
+                if let Some(path) = uri.to_file_path() {
                     let dir = path.parent().unwrap();
                     resolver.add_import_path(dir);
 
@@ -1194,7 +1206,7 @@ impl Backend {
                                     .map(|note| DiagnosticRelatedInformation {
                                         message: note.message.to_string(),
                                         location: Location {
-                                            uri: Url::from_file_path(
+                                            uri: Uri::from_file_path(
                                                 &ns.files[note.loc.file_no()].path,
                                             )
                                             .unwrap(),

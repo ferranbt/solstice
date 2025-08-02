@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::lsp_types::*;
 
 /// Efficiently tracks and applies document changes to positions
 #[derive(Debug)]
