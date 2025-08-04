@@ -2106,8 +2106,11 @@ mod tests {
             let mut output = String::new();
 
             for (_i, step) in self.steps.iter().enumerate() {
+                if _i == 0 {
+                    continue; // Skip the first step, which is a dummy function call
+                }
                 // Calculate depth based on call_trace length
-                let depth = step.call_trace.len();
+                let depth = step.call_trace.len() - 1; // -1 to ignore the dummy call
                 let indent = "  ".repeat(depth);
 
                 // Strip the workspace prefix from the path

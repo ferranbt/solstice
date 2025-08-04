@@ -299,12 +299,10 @@ impl Debugger {
         // go back to the previous statement
         while self.indx > START_INDEX {
             self.indx -= 1;
-            if !matches!(
-                self.trace.steps[self.indx].kind,
-                StepKind::FunctionDefinition(_)
-            ) {
-                return Some(self.debug_location());
+            if skip_step(&self.trace.steps[self.indx].kind) {
+                continue;
             }
+            return Some(self.debug_location());
         }
         None
     }
@@ -325,7 +323,7 @@ impl Debugger {
                 // but to jump directly to the next one.
                 continue;
             }
-            if matches!(step.kind, StepKind::FunctionDefinition(_)) {
+            if skip_step(&step.kind) {
                 continue;
             }
             if step.call_trace.len() > call_trace_length {
@@ -376,7 +374,7 @@ impl Debugger {
                 self.indx += 1;
 
                 let step = &self.trace.steps[self.indx];
-                if matches!(step.kind, StepKind::FunctionDefinition(_)) {
+                if skip_step(&step.kind) {
                     continue;
                 }
                 return Some(self.debug_location());
@@ -519,6 +517,11 @@ impl Debugger {
     }
 }
 
+fn skip_step(kind: &StepKind) -> bool {
+    // Skip steps that are function definitions or empty steps
+    matches!(kind, StepKind::FunctionDefinition(_)) || matches!(kind, StepKind::FunctionExit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,8 +548,8 @@ mod tests {
         let mut debugger = Debugger::new(debug_trace);
 
         // get the name of the file from the trace because we need
-        // the absolute path to set the breakpoint
-        let abs_path = debugger.trace.steps[0].path.clone();
+        // the absolute path to set the breakpoint. Avoid entry 0 which is the dummy func call
+        let abs_path = debugger.trace.steps[1].path.clone();
         debugger.set_breakpoint(abs_path.to_string(), 7);
 
         assert_eq!(debugger.cont(), Some(7));

@@ -1,1 +1,6 @@
+[FUNC] test_simple_revert (test/reverts.t.sol:5)
+[STMT] 6:8 scope=[value]
+[STMT] 7:8 scope=[value] (revert)
+[EXIT] 3:0 scope=[]
 ---
+Variable: value = "0"

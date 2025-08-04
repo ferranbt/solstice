@@ -1,0 +1,31 @@
+[FUNC] test_if_else (test/control_flow.t.sol:7)
+[CALL] 8:8
+  [FUNC] if_else (test/control_flow.t.sol:15)
+  [STMT] 16:12 scope=[val]
+  [STMT] 17:12 scope=[val]
+  [EXIT] 15:61 scope=[val]
+[CALL] 9:8
+  [FUNC] if_else (test/control_flow.t.sol:15)
+  [STMT] 16:12 scope=[val]
+  [STMT] 19:12 scope=[val]
+  [EXIT] 15:61 scope=[val]
+[CALL] 10:8
+  [FUNC] if_else_if (test/control_flow.t.sol:23)
+  [STMT] 24:12 scope=[val]
+  [STMT] 25:12 scope=[val]
+  [EXIT] 23:64 scope=[val]
+[CALL] 11:8
+  [FUNC] if_else_if (test/control_flow.t.sol:23)
+  [STMT] 24:12 scope=[val]
+  [STMT] 26:19 scope=[val]
+  [STMT] 27:12 scope=[val]
+  [EXIT] 23:64 scope=[val]
+[CALL] 12:8
+  [FUNC] if_else_if (test/control_flow.t.sol:23)
+  [STMT] 24:12 scope=[val]
+  [STMT] 26:19 scope=[val]
+  [STMT] 29:12 scope=[val]
+  [EXIT] 23:64 scope=[val]
+[EXIT] 7:37 scope=[]
+---
+Variable: val = "2"
