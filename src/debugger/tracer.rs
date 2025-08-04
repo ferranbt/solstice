@@ -982,9 +982,10 @@ impl DebugUnit {
 
             for inst in &block.instructions {
                 if let InstructionKind::VariableDeclaration(id) = inst.kind {
-                    vars_in_scope.push(id);
+                    if inst.loc.start <= loc.offset() as usize {
+                        vars_in_scope.push(id);
+                    }
                 };
-
                 if inst.loc.matches(loc) {
                     return (Some(MatchResult::Instruction(inst.clone())), vars_in_scope);
                 }
