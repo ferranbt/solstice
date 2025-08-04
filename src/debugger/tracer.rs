@@ -340,6 +340,7 @@ impl StatementVisitor {
             debug_unit: DebugUnit {
                 contract_name,
                 source_id: 0,
+                location: Default::default(),
                 path: path.clone(),
                 functions: HashMap::new(),
                 variables: Vec::new(),
@@ -512,6 +513,7 @@ impl StatementVisitor {
         let mut block = Block {
             variables: Vec::new(),
             condition: None,
+            else_condition: None,
             instructions: Vec::new(),
             scopes: Vec::new(),
             location: self.source_location_for(&node.src),
@@ -547,6 +549,8 @@ impl StatementVisitor {
                     });
                 }
                 NodeType::IfStatement => {
+                    //println!("Checking if statement: {:?}", statement);
+
                     // Create single block for if statement body
                     if let Some(true_body) = statement.attribute("trueBody") {
                         let mut if_block = self.build_debug_block(&true_body)?;
@@ -562,6 +566,17 @@ impl StatementVisitor {
                             });
                         }
                         block.scopes.push(if_block);
+
+                        // Check if it has a falseBody statement
+                        if let Some(condition) = statement.attribute::<Node>("falseBody") {
+                            println!("adding falseBody block: {:?}", condition.node_type);
+
+                            // Both if it is an if else or if else if statement they are encoded as falseBody elements
+                            let else_block = self.build_debug_block(&condition)?;
+                            // println!("adding else block: {:?}", else_block);
+
+                            block.scopes.push(else_block);
+                        }
                     }
                 }
                 NodeType::ForStatement => {
@@ -653,6 +668,7 @@ impl StatementVisitor {
                     block.scopes.push(Block {
                         variables: Vec::new(),
                         condition: None,
+                        else_condition: None,
                         instructions: Vec::new(),
                         scopes: catch_blocks,
                         location: block_location,
@@ -920,7 +936,20 @@ pub enum MatchResult {
     Function(Function),
     FunctionWithOut(Function),
     Instruction(Instruction),
-    ConstructorOut,
+    ConstructorIn(SourceLocation),
+    ConstructorOut(SourceLocation),
+}
+
+impl MatchResult {
+    fn type_string(&self) -> String {
+        match self {
+            MatchResult::Function(func) => format!("Function: {}", func.name),
+            MatchResult::FunctionWithOut(func) => format!("Function with out: {}", func.name),
+            MatchResult::Instruction(_) => "Instruction".to_string(),
+            MatchResult::ConstructorIn(_) => "Constructor in".to_string(),
+            MatchResult::ConstructorOut(_) => "Constructor out".to_string(),
+        }
+    }
 }
 
 // Conversion from your existing structures
@@ -933,11 +962,25 @@ impl DebugUnit {
         ) -> (Option<MatchResult>, Vec<usize>) {
             let mut vars_in_scope = parent_vars.clone();
 
+            if loc.offset() == 419 {
+                println!("=> Scopes: {:?}", block.scopes);
+            }
+
             // Check the condition statement first before we start to accumulate the vars_in_scope
             // The condition statement does not have in scope any of the variables defined in the block
             if let Some(cond) = &block.condition {
                 if cond.loc.matches(loc) {
                     return (Some(MatchResult::Instruction(cond.clone())), vars_in_scope);
+                }
+            }
+
+            // Check if the else condition matches
+            if let Some(else_cond) = &block.else_condition {
+                if else_cond.loc.matches(loc) {
+                    return (
+                        Some(MatchResult::Instruction(else_cond.clone())),
+                        vars_in_scope,
+                    );
                 }
             }
 
@@ -992,6 +1035,7 @@ impl DebugUnit {
 pub enum StepKind {
     FunctionDefinition(String),
     FunctionCall,
+    FunctionExit,
 
     #[allow(dead_code)]
     ConstructorOut,
@@ -1159,6 +1203,7 @@ struct OtherMatchLocation {
     path: String,
     vars_in_scope: Vec<usize>,
     state_snapshot: StateSnapshot,
+    is_revert: bool,
 }
 
 // Builder for generating a trace
@@ -1288,12 +1333,15 @@ impl Builder {
                             source_absolute_path.to_str().unwrap().to_string(),
                             source.clone(),
                         );
+
+                        let contract_loc = visitor.source_location_for(&node.src);
                         visitor.visit_contract(&node.clone()).unwrap();
 
                         // just so that we can keep the reference around
                         let mut dd = visitor.debug_unit;
                         dd.source_id = artifact.id.unwrap();
                         dd.linearized_base_contracts = linearized_base_contracts;
+                        dd.location = contract_loc;
 
                         // get the state variables from the trace context
                         let state_variables = dd
@@ -1382,7 +1430,7 @@ impl Builder {
 
         metrics_recorder.capture(Action::PrepareDebugUnits);
 
-        let mut matched_locations = Vec::new();
+        let mut matched_locations: Vec<OtherMatchLocation> = Vec::new();
 
         for node in self.context.debug_arena.iter() {
             // name of the contract in this step
@@ -1395,9 +1443,13 @@ impl Builder {
 
             let debug_unit = self.get_debug_unit_from_name(contract).unwrap();
 
-            for step in node.steps.iter() {
+            println!("Num steps at initial: {}", matched_locations.len());
+
+            let mut sub_matched_locations: Vec<OtherMatchLocation> = Vec::new();
+
+            for (indx, step) in node.steps.iter().enumerate() {
                 let memory = Bytes::from(step.memory.clone().unwrap().as_bytes().to_vec());
-                let stack: Vec<Bytes> = step
+                let mut stack: Vec<Bytes> = step
                     .stack
                     .clone()
                     .unwrap()
@@ -1443,6 +1495,8 @@ impl Builder {
                     continue;
                 };
 
+                println!("Checking source location: {:?}", source_location);
+
                 for debug_unit_to_test in debug_units_to_test.iter() {
                     if let (Some(loc), mut vars) =
                         debug_unit_to_test.match_location(source_location)
@@ -1451,11 +1505,24 @@ impl Builder {
                         vars.sort();
                         vars.dedup();
 
-                        matched_locations.push(OtherMatchLocation {
+                        if matches!(loc, MatchResult::Function(_))
+                            && source_location.jump() == Jump::Out
+                        {
+                            // Override the stack
+                            stack = sub_matched_locations
+                                .last()
+                                .expect("x")
+                                .state_snapshot
+                                .stack
+                                .clone();
+                        }
+
+                        sub_matched_locations.push(OtherMatchLocation {
                             match_result: loc,
                             source_location: source_location.clone(),
                             path: debug_unit_to_test.path.clone(),
                             vars_in_scope: vars,
+                            is_revert: step.op.get() == REVERT,
                             state_snapshot: StateSnapshot {
                                 stack: stack.clone(),
                                 memory: memory.clone(),
@@ -1464,25 +1531,66 @@ impl Builder {
                         });
                     }
                 }
+
+                if indx == node.steps.len() - 1 && node.kind.is_create() {
+                    let state_snapshot = StateSnapshot {
+                        storage,
+                        ..Default::default()
+                    };
+
+                    println!("Contract {}", debug_unit.contract_name);
+
+                    if sub_matched_locations.is_empty() {
+                        // there was nothing to trace here
+                        continue;
+                    }
+
+                    // we have to pick a location to show the function exit for the constructor
+                    // So, if the contract has a constructor, we will use that. But, it can be a contract
+                    // without a constructor but that inherits from a contract with a constructor in that case
+                    // it will have init data to execute but no constructor function. Then, we use the contract location.
+                    let location = match debug_unit.functions.get("constructor") {
+                        Some(func) => func.root_block.location.clone(),
+                        None => {
+                            // so this means that there was not a function entry for this exit, lets build a custom one
+                            sub_matched_locations.insert(
+                                0,
+                                OtherMatchLocation {
+                                    match_result: MatchResult::ConstructorIn(
+                                        debug_unit.location.clone(),
+                                    ),
+                                    path: debug_unit.path.clone(),
+                                    vars_in_scope: vec![],
+                                    source_location: Default::default(),
+                                    state_snapshot: StateSnapshot::default(),
+                                    is_revert: false,
+                                },
+                            );
+
+                            debug_unit.location.clone()
+                        }
+                    };
+
+                    let mut vars = debug_unit.state_variables.clone();
+                    vars.sort();
+                    vars.dedup();
+
+                    // we have to put a new "fake" instruction to signal that we got out of the constructor because
+                    // the way the constructor is laid out in the srcmap/pc is srcmap of the contract call
+                    // and then srcmap of internal elements but not a srcmap for the out call for this contract
+                    // so we have to add a new instruction to signal that we got out of the constructor
+                    sub_matched_locations.push(OtherMatchLocation {
+                        match_result: MatchResult::ConstructorOut(location),
+                        source_location: source_location.clone(),
+                        path: debug_unit.path.clone(),
+                        vars_in_scope: vars,
+                        state_snapshot: state_snapshot,
+                        is_revert: false,
+                    });
+                }
             }
 
-            // check the last item from the steps
-            let last = node.steps.last().unwrap();
-            let did_revert = last.op.get() == REVERT;
-
-            if node.kind.is_create() || did_revert {
-                // we have to put a new "fake" instruction to signal that we got out of the constructor because
-                // the way the constructor is laid out in the srcmap/pc is srcmap of the contract call
-                // and then srcmap of internal elements but not a srcmap for the out call for this contract
-                // so we have to add a new instruction to signal that we got out of the constructor
-                matched_locations.push(OtherMatchLocation {
-                    match_result: MatchResult::ConstructorOut,
-                    source_location: Default::default(),
-                    path: "".to_string(),
-                    vars_in_scope: vec![],
-                    state_snapshot: StateSnapshot::default(),
-                });
-            }
+            matched_locations.extend(sub_matched_locations);
         }
 
         metrics_recorder.capture(Action::MatchLocations);
@@ -1495,6 +1603,14 @@ impl Builder {
             // figure out the first entry to know how we are going to match and process this chunk
             let first_entry = chunk.first().unwrap();
 
+            println!(
+                "Tracing chunk {:?} {:?} {} {}",
+                first_entry.source_location,
+                first_entry.match_result.type_string(),
+                first_entry.is_revert,
+                chunk.len(),
+            );
+
             match &first_entry.match_result {
                 MatchResult::Function(_) => {
                     // find the element with the Out if there is any, that signals the function exit
@@ -1506,12 +1622,18 @@ impl Builder {
                             MatchResult::Function(func) => func,
                             _ => panic!("this is not expected to happen"),
                         };
+                        // show all state varialbes in all the chunks
+                        for i in chunk.iter() {
+                            println!("stack in chunk {:?}", i.state_snapshot.stack,);
+                        }
+
                         final_matched_locations.push(OtherMatchLocation {
                             match_result: MatchResult::FunctionWithOut(func_core.clone()),
                             source_location: func_with_out.source_location.clone(), // we care less about this ones
                             path: func_with_out.path.clone(),
-                            vars_in_scope: vec![],
+                            vars_in_scope: func_with_out.vars_in_scope.clone(),
                             state_snapshot: func_with_out.state_snapshot.clone(),
+                            is_revert: false,
                         });
                     } else {
                         // otherwise, pick the last element that matches
@@ -1531,10 +1653,24 @@ impl Builder {
                         }
                     }
 
-                    // just get the first instruction
+                    // we use the last entry because is the one that will have the reference
+                    // on whether this statement reverts or not
+                    let last_entry = chunk.last().unwrap().clone();
+                    if last_entry.is_revert {
+                        final_matched_locations.push(last_entry.clone());
+                    } else {
+                        // Otherwise we have to send the first entry which has the values before they are changed
+                        final_matched_locations.push(first_entry.clone());
+                    }
+
+                    // println!("Showing first and last entry");
+                    // println!("First entry: {:?}", first_entry.state_snapshot.stack);
+                    // println!("Last entry : {:?}", last_entry.state_snapshot.stack);
+                }
+                MatchResult::ConstructorIn(_) => {
                     final_matched_locations.push(first_entry.clone());
                 }
-                MatchResult::ConstructorOut => {
+                MatchResult::ConstructorOut(_) => {
                     // push it as it is, there should only be one of this
                     final_matched_locations.push(first_entry.clone());
                 }
@@ -1558,6 +1694,8 @@ impl Builder {
 
             match &i.match_result {
                 MatchResult::Function(func) => {
+                    println!("Functio in debug unit: {:?}", func.name);
+
                     if !expecting_function {
                         return Err(TraceError::FoundFunctionEntryWithoutCall);
                     }
@@ -1565,7 +1703,7 @@ impl Builder {
 
                     let is_first_step = steps.is_empty();
                     if !is_first_step {
-                        call_trace.push((func, steps.len() - 1));
+                        call_trace.push((func.clone(), steps.len() - 1));
                     }
 
                     // add the parameters to the assignments table
@@ -1590,22 +1728,70 @@ impl Builder {
                         state_snapshot: i.state_snapshot.clone(),
                     });
                 }
-                MatchResult::ConstructorOut => {
+                MatchResult::ConstructorIn(loc) => {
+                    println!("Constructor in debug unit: {:?}", loc);
+
+                    // Add a function entry step
+                    call_trace.push((Function::no_constructor(), steps.len() - 1));
+
+                    steps.push(DebugStep {
+                        location: loc.clone(),
+                        path,
+                        variables_in_scope: vec![],
+                        call_trace: local_call_trace,
+                        kind: StepKind::FunctionDefinition("<no-constructor>".to_string()),
+                        state_snapshot: i.state_snapshot.clone(),
+                    });
+                }
+                MatchResult::ConstructorOut(loc) => {
+                    println!("Constructor out debug unit: {:?}", loc);
+
                     call_trace.pop();
+
+                    steps.push(DebugStep {
+                        location: loc.clone(),
+                        path,
+                        variables_in_scope: i.vars_in_scope.clone(),
+                        call_trace: local_call_trace,
+                        kind: StepKind::FunctionExit,
+                        state_snapshot: i.state_snapshot.clone(),
+                    })
                 }
                 MatchResult::FunctionWithOut(func) => {
-                    // pop the last call trace and make sure the function is the same
+                    println!("Function with out debug unit: {:?}", func.name);
+
                     let last_call = call_trace.pop();
                     if let Some(last_call) = last_call {
+                        // TODO (ferranbt): This might be None because we start the call trace without a function call
+                        // Thus, the last function exit will not have a matching function call
                         if last_call.0.name.clone() != func.name {
-                            return Err(TraceError::FunctionWithIncorrectExitPc(
-                                func.name.clone(),
-                                last_call.0.name.clone(),
-                            ));
+                            //return Err(TraceError::FunctionWithIncorrectExitPc(
+                            //    func.name.clone(),
+                            //    last_call.0.name.clone(),
+                            //));
                         }
                     }
+
+                    // For the variables in scope we have to get the latest step and the same
+                    let latest_step = steps.last().cloned().unwrap_or_default();
+                    let vars_in_scope = latest_step.variables_in_scope;
+
+                    // Add the function exit step. We do this independent of whether we popped the function or not
+                    steps.push(DebugStep {
+                        location: func.root_block.location.clone(),
+                        path,
+                        variables_in_scope: vars_in_scope,
+                        call_trace: local_call_trace,
+                        kind: StepKind::FunctionExit,
+                        state_snapshot: i.state_snapshot.clone(),
+                    })
                 }
                 MatchResult::Instruction(inst) => {
+                    println!(
+                        "Instruction in debug unit: {:?} {:?} {:?}",
+                        inst.kind, inst.location, i.is_revert,
+                    );
+
                     let stmt_kind = match inst.kind {
                         InstructionKind::FunctionCall => StepKind::FunctionCall,
                         _ => StepKind::Statement,
@@ -1619,12 +1805,30 @@ impl Builder {
 
                     steps.push(DebugStep {
                         location: inst.location.clone(),
-                        path,
+                        path: path.clone(),
                         variables_in_scope: i.vars_in_scope.clone(),
-                        call_trace: local_call_trace,
+                        call_trace: local_call_trace.clone(),
                         kind: stmt_kind,
                         state_snapshot: i.state_snapshot.clone(),
                     });
+
+                    if i.is_revert {
+                        println!("Adding function out");
+
+                        // Since the function reverts, we have to pop the current call trace and
+                        // add a function exit step. We use the same vars in scope as the last statement
+                        // since we want the function exit step to represent the latest state of the function
+                        if let Some(last_call) = call_trace.pop() {
+                            steps.push(DebugStep {
+                                location: last_call.0.root_block.location.clone(),
+                                path: path.clone(),
+                                variables_in_scope: i.vars_in_scope.clone(),
+                                call_trace: local_call_trace,
+                                kind: StepKind::FunctionExit,
+                                state_snapshot: i.state_snapshot.clone(),
+                            })
+                        };
+                    }
 
                     if matches!(inst.kind, InstructionKind::FunctionCall) {
                         expecting_function = true;
@@ -1723,6 +1927,7 @@ impl Builder {
 pub struct DebugUnit {
     pub contract_name: String,
     pub path: String,
+    pub location: SourceLocation,
     pub functions: HashMap<String, Function>,
     // list of state variables in this contract, they are stored in a
     // different place in the trace context
@@ -1764,11 +1969,28 @@ pub struct Function {
     pub loc: SourceLocationHelper,
 }
 
+impl Function {
+    pub fn no_constructor() -> Self {
+        Function {
+            name: "<no-constructor>".to_string(),
+            kind: FunctionKind::Constructor,
+            root_block: Block::default(),
+            parameters: vec![],
+            loc: SourceLocationHelper {
+                start: 0,
+                length: 0,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Block {
     pub variables: Vec<usize>,
     // For if conditions and loop conditions
     pub condition: Option<Instruction>,
+    // For else conditions
+    pub else_condition: Option<Instruction>,
     // The actual statements in this block
     pub instructions: Vec<Instruction>,
     // Nested scopes (if/else bodies, loop bodies)
@@ -2033,12 +2255,45 @@ mod tests {
                     .trim_start_matches('/')
                     .to_string();
 
+                // Get names of variables in scope
+                let vars_in_scope: Vec<String> = step
+                    .variables_in_scope
+                    .iter()
+                    .filter_map(|&id| {
+                        // Try to find the variable first in the local debug context and then in
+                        // the general one that stores the state variables
+                        let var = if let Some(var) = self.variables.get(&(id as u64)) {
+                            var
+                        } else {
+                            debug_context.state_variables.get(&id).unwrap()
+                        };
+
+                        let name = var.name.clone();
+                        if SKIP_TRACE_LIST.contains(&name.as_str()) {
+                            None
+                        } else {
+                            Some(name)
+                        }
+                    })
+                    .collect();
+
                 match &step.kind {
                     StepKind::FunctionDefinition(name) => {
                         writeln!(
                             output,
                             "{}[FUNC] {} ({}:{})",
                             indent, name, relative_path, step.location.line
+                        )
+                        .unwrap();
+                    }
+                    StepKind::FunctionExit => {
+                        writeln!(
+                            output,
+                            "{}[EXIT] {}:{} scope=[{}]",
+                            indent,
+                            step.location.line,
+                            step.location.column,
+                            vars_in_scope.join(", ")
                         )
                         .unwrap();
                     }
@@ -2054,28 +2309,6 @@ mod tests {
                         .unwrap();
                     }
                     StepKind::Statement => {
-                        // Get names of variables in scope
-                        let vars_in_scope: Vec<String> = step
-                            .variables_in_scope
-                            .iter()
-                            .filter_map(|&id| {
-                                // Try to find the variable first in the local debug context and then in
-                                // the general one that stores the state variables
-                                let var = if let Some(var) = self.variables.get(&(id as u64)) {
-                                    var
-                                } else {
-                                    debug_context.state_variables.get(&id).unwrap()
-                                };
-
-                                let name = var.name.clone();
-                                if SKIP_TRACE_LIST.contains(&name.as_str()) {
-                                    None
-                                } else {
-                                    Some(name)
-                                }
-                            })
-                            .collect();
-
                         writeln!(
                             output,
                             "{}[STMT] {}:{} scope=[{}]",
@@ -2228,10 +2461,21 @@ mod tests {
         let workspace_path = workspace_path_string.as_str();
 
         let filter_trace = std::env::var("FILTER_TRACE").unwrap_or_default();
-
         let override_tests = std::env::var("OVERRIDE_TESTS").unwrap_or_default() != "";
 
-        let test_traces = get_trace_test_cases(workspace_path);
+        let test_traces = get_trace_test_cases(workspace_path)
+            .into_iter()
+            .filter(|t| {
+                // If the FILTER_TRACE env variable is set, only run the trace for the function
+                // specified there.
+                filter_trace.is_empty() || filter_trace == t.test_case_function
+            })
+            .collect::<Vec<_>>();
+
+        if test_traces.is_empty() {
+            return Err(eyre::eyre!("No test traces found"));
+        }
+
         for trace_test_case in test_traces {
             // If the FILTER_TRACE env variable is set, only run the trace for the function
             // specified there.
@@ -2293,6 +2537,8 @@ mod tests {
                 debugger.last();
 
                 let vars_in_scope = debugger.scope();
+
+                println!("Variables in scope: {:?}", vars_in_scope);
 
                 // resolve each variable
                 let mut state_result = String::new();
