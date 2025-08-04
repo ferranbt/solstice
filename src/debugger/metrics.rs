@@ -5,8 +5,6 @@ use std::time::{Duration, Instant};
 pub enum Action {
     GenerateDebugUnits,
     PrepareDebugUnits,
-    MatchLocations,
-    FinalizeMatchedLocations,
     GenerateSteps,
     GenerateVariableDefinitions,
 }
@@ -54,18 +52,13 @@ mod tests {
         thread::sleep(Duration::from_millis(20));
         recorder.capture(Action::PrepareDebugUnits);
 
-        thread::sleep(Duration::from_millis(15));
-        recorder.capture(Action::MatchLocations);
-
         let metrics = recorder.metrics;
-        assert_eq!(metrics.len(), 3);
+        assert_eq!(metrics.len(), 2);
         assert_eq!(metrics[0].0, Action::GenerateDebugUnits);
         assert_eq!(metrics[1].0, Action::PrepareDebugUnits);
-        assert_eq!(metrics[2].0, Action::MatchLocations);
 
         // Check that durations are reasonable (allowing for some variance)
         assert!(metrics[0].1 >= Duration::from_millis(8));
         assert!(metrics[1].1 >= Duration::from_millis(18));
-        assert!(metrics[2].1 >= Duration::from_millis(13));
     }
 }

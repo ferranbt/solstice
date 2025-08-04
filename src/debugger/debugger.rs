@@ -275,11 +275,13 @@ pub struct Breakpoint {
 
 type DebugLocation = usize;
 
+const START_INDEX: usize = 1; // Start at 1 to skip the initial function definition
+
 impl Debugger {
     pub fn new(trace: DebugTrace) -> Self {
         Self {
             trace,
-            indx: 0,
+            indx: START_INDEX,
             breakpoints: vec![],
         }
     }
@@ -295,7 +297,7 @@ impl Debugger {
 
     pub fn prev(&mut self) -> Option<DebugLocation> {
         // go back to the previous statement
-        while self.indx > 0 {
+        while self.indx > START_INDEX {
             self.indx -= 1;
             if !matches!(
                 self.trace.steps[self.indx].kind,
@@ -369,7 +371,7 @@ impl Debugger {
     pub fn step_in(&mut self) -> Option<DebugLocation> {
         // if next item is a function call, go inside it.
         // otherwise, return the next item in the current function
-        if matches!(self.trace.steps[self.indx].kind, StepKind::FunctionCall) {
+        if self.trace.steps[self.indx].kind.is_function_call() {
             while self.indx < self.trace.steps.len() - 1 {
                 self.indx += 1;
 
