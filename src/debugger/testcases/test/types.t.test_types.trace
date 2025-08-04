@@ -3,6 +3,7 @@
 [STMT] 20:8 scope=[arg_0, arg_1, arg_2, arg_3]
 [STMT] 21:8 scope=[arg_0, arg_1, arg_2, arg_3]
 [STMT] 22:8 scope=[arg_0, arg_1, arg_2, arg_3]
+[EXIT] 18:35 scope=[arg_0, arg_1, arg_2, arg_3]
 ---
 Variable: arg_0 = "A"
 Variable: arg_1 = "A"

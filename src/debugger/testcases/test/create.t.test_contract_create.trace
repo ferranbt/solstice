@@ -1,0 +1,30 @@
+[FUNC] test_contract_create (test/create.t.sol:31)
+[CREATE] 32:8
+  [FUNC] constructor (test/create.t.sol:7)
+  [EXIT] 5:0 scope=[]
+[STMT] 32:8 scope=[a]
+[CREATE] 33:8
+  [EXIT] 9:0 scope=[]
+[STMT] 33:8 scope=[a, b]
+[CREATE] 34:8
+  [FUNC] constructor (test/create.t.sol:15)
+  [STMT] 16:8 scope=[value]
+  [EXIT] 11:0 scope=[]
+[STMT] 34:8 scope=[a, b, c]
+[CREATE] 35:8
+  [STMT] 16:8 scope=[value]
+  [EXIT] 19:0 scope=[]
+[STMT] 35:8 scope=[a, b, c, d]
+[CREATE] 36:8
+  [FUNC] constructor (test/create.t.sol:25)
+  [STMT] 16:8 scope=[value]
+  [STMT] 26:8 scope=[value, value2]
+  [EXIT] 21:0 scope=[]
+[STMT] 36:8 scope=[a, b, c, d, e]
+[EXIT] 31:45 scope=[]
+---
+Variable: a = "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f"
+Variable: b = "0x2e234DAe75C793f67A35089C9d99245E1C58470b"
+Variable: c = "0xF62849F9A0B5Bf2913b396098F7c7019b51A820a"
+Variable: d = "0x5991A2dF15A8F6A256D3Ec51E99254Cd3fb576A9"
+Variable: e = "0x0000000000000000000000000000000000000000"

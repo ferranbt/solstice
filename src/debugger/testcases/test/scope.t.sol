@@ -44,5 +44,12 @@ contract Complex is Test {
                 }
             }
         }
+
+        // TODO: variables declared after the if statement
+        // if (a0 < a1) {
+        //     uint256 h0 = 24;
+        // }
+        // uint256 h1 = 25;
+        // uint256 h2 = 26;
     }
 }

@@ -1,34 +1,40 @@
 [FUNC] test_try_catch (test/try_catch.t.sol:11)
-[CALL] 12:8
-[FUNC] constructor (src/try_catch.sol:5)
+[CREATE] 12:8
+  [FUNC] constructor (src/try_catch.sol:5)
+  [EXIT] 3:0 scope=[]
 [STMT] 12:8 scope=[cc, result]
 [CALL] 13:8
-[FUNC] try_fail (test/try_catch.t.sol:20)
-  [CALL] 21:8
-  [FUNC] fail (src/try_catch.sol:8)
-    [STMT] 9:12 scope=[val]
-    [STMT] 32:8 scope=[val]
-  [CALL] 21:8
-  [STMT] 22:12 scope=[cc, result, value]
+  [FUNC] try_fail (test/try_catch.t.sol:19)
+  [CALL] 20:8
+    [FUNC] fail (src/try_catch.sol:7)
+    [STMT] 8:12 scope=[val]
+    [STMT] 28:8 scope=[val]
+    [EXIT] 7:58 scope=[val]
+  [STMT] 21:12 scope=[cc, result, value]
+  [EXIT] 19:46 scope=[cc, result, value]
 [CALL] 14:8
-[FUNC] try_fail (test/try_catch.t.sol:20)
-  [CALL] 21:8
-  [FUNC] fail (src/try_catch.sol:8)
-    [STMT] 9:12 scope=[val]
-  [STMT] 24:12 scope=[cc, result, value]
+  [FUNC] try_fail (test/try_catch.t.sol:19)
+  [CALL] 20:8
+    [FUNC] fail (src/try_catch.sol:7)
+    [STMT] 8:12 scope=[val]
+    [STMT] 11:19 scope=[val]
+    [STMT] 13:12 scope=[val] (revert)
+    [EXIT] 3:0 scope=[]
+  [STMT] 23:12 scope=[cc, result, value]
+  [EXIT] 19:46 scope=[cc, result, value]
 [CALL] 15:8
-[FUNC] try_fail (test/try_catch.t.sol:20)
-  [CALL] 21:8
-  [FUNC] fail (src/try_catch.sol:8)
-    [STMT] 9:12 scope=[val]
-  [STMT] 26:12 scope=[cc, result, value]
-[CALL] 16:8
-[FUNC] try_fail (test/try_catch.t.sol:20)
-  [CALL] 21:8
-  [FUNC] fail (src/try_catch.sol:8)
-    [STMT] 9:12 scope=[val]
-  [STMT] 28:12 scope=[cc, result, value]
-[STMT] 17:8 scope=[cc, result]
+  [FUNC] try_fail (test/try_catch.t.sol:19)
+  [CALL] 20:8
+    [FUNC] fail (src/try_catch.sol:7)
+    [STMT] 8:12 scope=[val]
+    [STMT] 11:19 scope=[val]
+    [STMT] 14:19 scope=[val]
+    [STMT] 16:12 scope=[val, zero]
+    [EXIT] 3:0 scope=[]
+  [STMT] 25:12 scope=[cc, result, value]
+  [EXIT] 19:46 scope=[cc, result, value]
+[STMT] 16:8 scope=[cc, result]
+[EXIT] 11:39 scope=[cc, result]
 ---
 Variable: cc = "0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f"
-Variable: result = "3"
+Variable: result = "2"

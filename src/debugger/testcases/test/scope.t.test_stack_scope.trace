@@ -23,3 +23,4 @@
 [STMT] 41:20 scope=[a0, a1, a2, a3]
 [STMT] 42:20 scope=[a0, a1, a2, a3, g0]
 [STMT] 43:20 scope=[a0, a1, a2, a3, g0, g1]
+[EXIT] 5:41 scope=[]

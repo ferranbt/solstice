@@ -275,11 +275,13 @@ pub struct Breakpoint {
 
 type DebugLocation = usize;
 
+const START_INDEX: usize = 1; // Start at 1 to skip the initial function definition
+
 impl Debugger {
     pub fn new(trace: DebugTrace) -> Self {
         Self {
             trace,
-            indx: 0,
+            indx: START_INDEX,
             breakpoints: vec![],
         }
     }
@@ -295,14 +297,12 @@ impl Debugger {
 
     pub fn prev(&mut self) -> Option<DebugLocation> {
         // go back to the previous statement
-        while self.indx > 0 {
+        while self.indx > START_INDEX {
             self.indx -= 1;
-            if !matches!(
-                self.trace.steps[self.indx].kind,
-                StepKind::FunctionDefinition(_)
-            ) {
-                return Some(self.debug_location());
+            if skip_step(&self.trace.steps[self.indx].kind) {
+                continue;
             }
+            return Some(self.debug_location());
         }
         None
     }
@@ -323,7 +323,7 @@ impl Debugger {
                 // but to jump directly to the next one.
                 continue;
             }
-            if matches!(step.kind, StepKind::FunctionDefinition(_)) {
+            if skip_step(&step.kind) {
                 continue;
             }
             if step.call_trace.len() > call_trace_length {
@@ -369,12 +369,12 @@ impl Debugger {
     pub fn step_in(&mut self) -> Option<DebugLocation> {
         // if next item is a function call, go inside it.
         // otherwise, return the next item in the current function
-        if matches!(self.trace.steps[self.indx].kind, StepKind::FunctionCall) {
+        if self.trace.steps[self.indx].kind.is_function_call() {
             while self.indx < self.trace.steps.len() - 1 {
                 self.indx += 1;
 
                 let step = &self.trace.steps[self.indx];
-                if matches!(step.kind, StepKind::FunctionDefinition(_)) {
+                if skip_step(&step.kind) {
                     continue;
                 }
                 return Some(self.debug_location());
@@ -517,6 +517,11 @@ impl Debugger {
     }
 }
 
+fn skip_step(kind: &StepKind) -> bool {
+    // Skip steps that are function definitions or empty steps
+    matches!(kind, StepKind::FunctionDefinition(_)) || matches!(kind, StepKind::FunctionExit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,8 +548,8 @@ mod tests {
         let mut debugger = Debugger::new(debug_trace);
 
         // get the name of the file from the trace because we need
-        // the absolute path to set the breakpoint
-        let abs_path = debugger.trace.steps[0].path.clone();
+        // the absolute path to set the breakpoint. Avoid entry 0 which is the dummy func call
+        let abs_path = debugger.trace.steps[1].path.clone();
         debugger.set_breakpoint(abs_path.to_string(), 7);
 
         assert_eq!(debugger.cont(), Some(7));
