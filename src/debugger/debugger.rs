@@ -430,11 +430,6 @@ impl Debugger {
                     })
                     .collect();
 
-                println!(
-                    "Contract storage: {:?} pos {:?}",
-                    contract_storage, storage_position
-                );
-
                 let state_resolver = StateReference::new(contract_storage);
                 let typ = self.trace.variable_types.get(&var_id).cloned().unwrap();
                 let value = state_resolver.resolve_type(typ.clone(), storage_position);
