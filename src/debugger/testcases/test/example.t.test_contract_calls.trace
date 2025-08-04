@@ -1,7 +1,7 @@
 [FUNC] test_contract_calls (test/example.t.sol:31)
 [CREATE] 32:8
   [FUNC] constructor (src/example1.sol:17)
-  [STMT] 18:8 scope=[parent_value, parent_value_2, value]
+  [STMT] 18:8 scope=[parent_value, value, parent_value_2]
   [EXIT] 13:0 scope=[]
 [STMT] 32:8 scope=[value, example]
 [CALL] 33:8
@@ -14,5 +14,5 @@
   [EXIT] 7:65 scope=[parent_value_2, new_parent_value]
 [EXIT] 31:44 scope=[value]
 ---
-Variable: parent_value_2 = "1"
+Variable: parent_value_2 = "0"
 Variable: new_parent_value = "149401154"

@@ -972,10 +972,6 @@ impl DebugUnit {
         ) -> (Option<MatchResult>, Vec<usize>) {
             let mut vars_in_scope = parent_vars.clone();
 
-            if loc.offset() == 419 {
-                println!("=> Scopes: {:?}", block.scopes);
-            }
-
             // Check the condition statement first before we start to accumulate the vars_in_scope
             // The condition statement does not have in scope any of the variables defined in the block
             if let Some(cond) = &block.condition {
@@ -1635,13 +1631,12 @@ impl Builder {
                     MatchResult::Instruction(inst) => {
                         let last_entry = chunk.last().unwrap();
 
-                        // Process instruction elements
                         if matches!(inst.kind, InstructionKind::FunctionCall) {
-                            // There are two signals that we are in a function call or create call, either the last entry is a jump in
-                            // or the last opcode is a CALL/CREATE opcode family.
-                            // Other combinations of this that might appear are, groups of call backs witht he same source location but withotu any jump in
-                            // which is the return of an internal function
-                            // or groups of chunks with one internal jump in that is the return of an external function call.
+                            // Note that what we want to detect here is the outgoing function call/create call. However
+                            // the source map for the function call matches both the outgoing statement and the callback once the call is done.
+                            // So, we have to find the heuristics that determine only the outgoing call, which are:
+                            // - Internal call: The last entry is a JUMP IN.
+                            // - External call: The last opcode is a CALL/CREATE opcode family.
                             if !is_call_op_code(last_entry.0.op.get())
                                 && last_entry.1.jump() != Jump::In
                             {
@@ -1683,9 +1678,7 @@ impl Builder {
 
                         if matches!(inst.kind, InstructionKind::FunctionCall) {
                             expecting_function = true;
-
-                            // add an entry into the call trace
-                            call_trace.push(steps.len() - 1); // TODO: not sure it it should point to the call or the step, I think it is the call
+                            call_trace.push(steps.len() - 1);
                         }
                     }
                 }
@@ -1696,21 +1689,19 @@ impl Builder {
                 .last()
                 .is_some_and(|step| step.op.get() == REVERT);
 
-            // TODO Note: there are some weird mapping errors sometimes so we cannot rely on whether the statements revert or not
-            // because this last opcode might not have a match into a statement.
-            // Also it might happen that we do not have yet the statement parsed so it might be good that we catch anyway the revert.
+            // Note that we could figure out whether it reverts at the statement level. However, it might happen
+            // that we do not visit the statement that reverts and we do not keep track of it during the step matching.
+            // Thus, we would not detect the revert and we would not pop up the call trace.
 
             if node.kind.is_create() || is_revert {
-                // get a copy before you pop
+                // get a copy before you pop the call trace since the exit step references
+                // the call trace at the moment of the exit
                 let local_call_trace = call_trace.clone();
 
-                // A constructor does not have an exit function call, so we have to manually add one
-                // This function chunk includes an outgoing jump, which signals the exit of the function
                 let Some(_) = call_trace.pop() else {
                     return Err(TraceError::FoundFunctionExitWithoutCall);
                 };
 
-                // Add the function exit step. We do this independent of whether we popped the function or not
                 steps.push(DebugStep {
                     location: debug_unit.location,
                     path: debug_unit.path.clone(),
