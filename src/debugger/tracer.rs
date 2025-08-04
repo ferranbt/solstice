@@ -1536,8 +1536,12 @@ impl Builder {
                     .expect("There has to be at least one entry in the chunk");
 
                 let elem = first_entry.2.clone();
-                let vars_in_scope = first_entry.3.clone();
+                let mut vars_in_scope = first_entry.3.clone();
                 let path = first_entry.4.clone();
+
+                // TODO: Some storage variables might be repeated
+                vars_in_scope.dedup();
+                vars_in_scope.sort();
 
                 let memory = Bytes::from(first_entry.0.memory.clone().unwrap().as_bytes().to_vec());
                 let stack: Vec<Bytes> = first_entry
