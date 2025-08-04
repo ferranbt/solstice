@@ -45,8 +45,8 @@ rustc-hash = "1.1"
 semver = "1"
 dap = "0.4.1-alpha1"
 clap = { version = "4.5.16", features = ["derive"] }
-solang-parser = { git = "http://github.com/ferranbt/solang", rev = "6e27d6dbbbc75e672f2ea2d85a712990fca78105" }
-solang = { git = "http://github.com/ferranbt/solang", rev = "6e27d6dbbbc75e672f2ea2d85a712990fca78105", default-features = false }
+solang-parser = { git = "http://github.com/ferranbt/solang", rev = "f89387824c34097bd12f02d6745350f937d4054a" }
+solang = { git = "http://github.com/ferranbt/solang", rev = "f89387824c34097bd12f02d6745350f937d4054a", default-features = false }
 forge-fmt = "0.2.0"
 anstream = "0.6.18"
 arbitrary = { version = "1", features = ["derive"] }
