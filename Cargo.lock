@@ -6667,7 +6667,7 @@ dependencies = [
 [[package]]
 name = "solang"
 version = "0.3.3"
-source = "git+http://github.com/ferranbt/solang?rev=f89387824c34097bd12f02d6745350f937d4054a#f89387824c34097bd12f02d6745350f937d4054a"
+source = "git+http://github.com/ferranbt/solang?rev=3635de23dbd7302b5d6618094d1802f9bbebf9fe#3635de23dbd7302b5d6618094d1802f9bbebf9fe"
 dependencies = [
  "anchor-syn",
  "base58",
@@ -6733,7 +6733,7 @@ dependencies = [
 [[package]]
 name = "solang-parser"
 version = "0.3.3"
-source = "git+http://github.com/ferranbt/solang?rev=f89387824c34097bd12f02d6745350f937d4054a#f89387824c34097bd12f02d6745350f937d4054a"
+source = "git+http://github.com/ferranbt/solang?rev=3635de23dbd7302b5d6618094d1802f9bbebf9fe#3635de23dbd7302b5d6618094d1802f9bbebf9fe"
 dependencies = [
  "itertools 0.12.1",
  "lalrpop",
