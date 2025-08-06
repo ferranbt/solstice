@@ -1513,7 +1513,6 @@ impl Builder {
                                 vars,
                                 debug_unit_to_test.path.clone(),
                                 indx,
-                                debug_unit_to_test.contract_name.clone(),
                             ));
                         }
                     }
