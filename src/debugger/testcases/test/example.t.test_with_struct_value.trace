@@ -1,8 +1,8 @@
-[FUNC] test_with_struct_value (test/example.t.sol:41)
-[STMT] 42:8 scope=[value, s]
-[STMT] 43:8 scope=[value, s]
+[FUNC] test_with_struct_value (test/example.t.sol:43)
 [STMT] 44:8 scope=[value, s]
-[EXIT] 41:47 scope=[value]
+[STMT] 45:8 scope=[value, s]
+[STMT] 46:8 scope=[value, s]
+[EXIT] 43:47 scope=[value]
 ---
 Variable: value = "3"
 Variable: s = {"value":"123"}
