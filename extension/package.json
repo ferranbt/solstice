@@ -3,7 +3,7 @@
   "displayName": "Solstice",
   "description": "Solidity Language Server and Debugger",
   "license": "MIT",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "categories": [
     "Programming Languages",
     "Snippets"
