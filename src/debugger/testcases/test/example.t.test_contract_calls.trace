@@ -12,7 +12,11 @@
   [FUNC] set_parent_value_1 (src/parent.sol:7)
   [STMT] 8:8 scope=[parent_value_2, new_parent_value]
   [EXIT] 7:65 scope=[parent_value_2, new_parent_value]
+[CALL] 35:8
+  [FUNC] set_parent_value_1 (src/parent.sol:7)
+  [STMT] 8:8 scope=[parent_value_2, new_parent_value]
+  [EXIT] 7:65 scope=[parent_value_2, new_parent_value]
 [EXIT] 31:44 scope=[value]
 ---
-Variable: parent_value_2 = "0"
-Variable: new_parent_value = "149401154"
+Variable: parent_value_2 = "1"
+Variable: new_parent_value = "2222"
