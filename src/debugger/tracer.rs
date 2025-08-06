@@ -1513,6 +1513,7 @@ impl Builder {
                                 vars,
                                 debug_unit_to_test.path.clone(),
                                 indx,
+                                debug_unit_to_test.contract_name.clone(),
                             ));
                         }
                     }
@@ -1530,6 +1531,10 @@ impl Builder {
             for chunk in chunks {
                 let first_entry = chunk
                     .first()
+                    .expect("There has to be at least one entry in the chunk");
+
+                let last_entry = chunk
+                    .last()
                     .expect("There has to be at least one entry in the chunk");
 
                 let elem = first_entry.2.clone();
@@ -1605,6 +1610,27 @@ impl Builder {
                                 return Err(TraceError::FoundFunctionEntryWithoutCall);
                             }
                             expecting_function = false;
+
+                            // Override the state snapshot to use the last entry for both stack and memory so that
+                            // we can have the parameters and their final state before the function starts.
+                            let memory = Bytes::from(
+                                last_entry.0.memory.clone().unwrap().as_bytes().to_vec(),
+                            );
+                            let stack: Vec<Bytes> = last_entry
+                                .0
+                                .stack
+                                .clone()
+                                .unwrap()
+                                .iter()
+                                .map(|b| Bytes::from(b.to_be_bytes_vec()))
+                                .collect();
+
+                            let state_snapshot = StateSnapshot {
+                                memory,
+                                stack,
+                                // storage we really do not care that much because it is not going to change due to a function definition
+                                storage: state_snapshot.storage.clone(),
+                            };
 
                             // add the parameters to the assignments table
                             let num_params = func.parameters.len();
