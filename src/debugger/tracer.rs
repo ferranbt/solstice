@@ -24,7 +24,6 @@ use slice_group_by::GroupBy;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs;
-use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
@@ -1262,7 +1261,7 @@ impl Builder {
         None
     }
 
-    pub fn get_debug_unit(&self, source_id: u32) -> Option<Ref<u32, Vec<DebugUnit>>> {
+    pub fn get_debug_unit(&self, source_id: u32) -> Option<Ref<'_, u32, Vec<DebugUnit>>> {
         // Generate if not exists
         if !self.debug_units.contains_key(&source_id) {
             self.generate_debug_unit(source_id);
@@ -1936,9 +1935,6 @@ pub struct Instruction {
     pub kind: InstructionKind,
     pub loc: SourceLocationHelper,
 }
-
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct VariableId(pub u64);
 
 fn is_forge_variable(name: &str) -> bool {
     SKIP_TRACE_LIST.contains(&name)

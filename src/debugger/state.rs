@@ -788,12 +788,6 @@ struct EnumMember {
     name: String,
 }
 
-#[derive(Serialize)]
-pub struct GeneratedContract {
-    pub source: String,
-    pub values: JsonValue,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 enum StackType {
     Address,
@@ -1564,6 +1558,12 @@ pub mod testing {
             let error = String::from_utf8_lossy(&output.stderr);
             Err(eyre::eyre!("Solidity compilation failed: {}", error))
         }
+    }
+
+    #[derive(Serialize)]
+    pub struct GeneratedContract {
+        pub source: String,
+        pub values: JsonValue,
     }
 
     #[derive(Clone, Debug)]
