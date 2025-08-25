@@ -55,8 +55,8 @@ impl TraceContext {
 
 #[derive(Deserialize)]
 struct DebuggerContext {
-    pub debug_arena: Vec<DebugNode>,
     pub contracts: ContractsDump,
+    pub debug_arena: Vec<DebugNode>,
 }
 
 #[derive(Deserialize)]
