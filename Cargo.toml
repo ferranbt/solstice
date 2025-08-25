@@ -23,21 +23,21 @@ dashmap = "5.1.0"
 log = "0.4.14"
 im-rc = "15.0.0"
 foundry-compilers = "0.17.3"
-revm-inspectors = { version = "0.24.0", features = ["serde"] }
+revm-inspectors = { version = "0.29.0", features = ["serde"] }
 alloy-primitives = "1.2.0"
 alloy-sol-types = "1.2.0"
-alloy-provider = { version = "1.0.9", features = [
+alloy-provider = { version = "1.0.23", features = [
     "anvil-node",
     "trace-api",
     "debug-api",
 ] }
-alloy-node-bindings = "1.0.9"
-alloy-contract = "1.0.9"
-alloy-rpc-types = "1.0.9"
-alloy-rpc-types-trace = "1.0.9"
-alloy-rpc-types-debug = "1.0.9"
-alloy-transport = "1.0.9"
-alloy-transport-http = "1.0.9"
+alloy-node-bindings = "1.0.23"
+alloy-contract = "1.0.23"
+alloy-rpc-types = "1.0.23"
+alloy-rpc-types-trace = "1.0.23"
+alloy-rpc-types-debug = "1.0.23"
+alloy-transport = "1.0.23"
+alloy-transport-http = "1.0.23"
 lsp-types = "0.97.0"
 eyre = "0.6"
 rayon = "1.8"
