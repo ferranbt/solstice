@@ -136,7 +136,7 @@ fn end_of_block_hint(func_name: String, loc: Range) -> InlayHint {
     }
 }
 
-fn func_to_inlay_hint(selector: Vec<u8>, loc: Range) -> InlayHint {
+fn func_to_inlay_hint(selector: Vec<u8>, loc: Position) -> InlayHint {
     // Display the selector at the end of the range
     let hex_selector = selector
         .iter()
@@ -145,8 +145,8 @@ fn func_to_inlay_hint(selector: Vec<u8>, loc: Range) -> InlayHint {
 
     InlayHint {
         position: Position {
-            line: loc.end.line,
-            character: loc.end.character + 2,
+            line: loc.line,
+            character: loc.character + 1,
         },
         label: InlayHintLabel::String(format!("selector: {hex_selector}")),
         kind: None,
@@ -1944,9 +1944,10 @@ impl<'a> Builder<'a> {
                             }
                         }
 
-                        // hint for function selector
-                        let range = loc_to_range(&f.loc_prototype, self.ns.files.get(i).unwrap());
-                        hints.push(func_to_inlay_hint(f.selector(self.ns, &0), range));
+                        // hint for function selector, it always goes at the end of the line
+                        let pos =
+                            get_last_character_pos(&f.loc_prototype, self.ns.files.get(i).unwrap());
+                        hints.push(func_to_inlay_hint(f.selector(self.ns, &0), pos));
 
                         hints
                     })
@@ -2016,6 +2017,29 @@ impl<'a> Builder<'a> {
             _ => make_code_block(ty.to_string(self.ns)),
         }
     }
+}
+
+fn get_last_character_pos(loc: &pt::Loc, file: &ast::File) -> Position {
+    // From a random offset position 'loc' we have to determine in which line it is and
+    // how many columns does that line has.
+    // There is a map line_starts in ast::File that contains the offsets where each line starts.
+    // Once we know the line at which 'loc' belongs, we can query the offset of that line and
+    // the next one (if any) to determine the length of the line.
+    let (line, _) = file.offset_to_line_column(loc.start());
+
+    // line is 1-based, line_starts is 0-based
+    let line_indx = line - 1;
+
+    let line_start_offset = file.line_starts[line_indx];
+    let line_end_offset = if line_indx + 1 < file.line_starts.len() {
+        file.line_starts[line_indx + 1] - 1 // -1 to avoid counting the '\n' character
+    } else {
+        // TODO: last line
+        line_start_offset
+    };
+
+    let line_length = line_end_offset - line_start_offset;
+    Position::new(line as u32, line_length as u32)
 }
 
 /// Calculate the line and column from the Loc offset received from the parser

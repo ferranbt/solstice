@@ -33,4 +33,6 @@ contract FooTest is Test {
     function call_with_params(uint256 a, uint256 b) private returns (uint256) {
         return a + b;
     }
+
+    bool public XXX = true;
 }

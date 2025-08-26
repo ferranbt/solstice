@@ -18,5 +18,5 @@
   [EXIT] 7:65 scope=[parent_value_2, new_parent_value]
 [EXIT] 31:44 scope=[value]
 ---
-Variable: parent_value_2 = "1"
+Variable: parent_value_2 = "3"
 Variable: new_parent_value = "2222"

@@ -104,7 +104,7 @@ suite("Extension Test Suite", () => {
     const function_selector_hints = [
       {
         label: "selector: 3d41c222",
-        position: new vscode.Position(4, 74),
+        position: new vscode.Position(4, 75),
       },
       {
         label: "selector: fd610ec7",
